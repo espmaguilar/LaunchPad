@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SafeSight Policy Setup</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%227%22 fill=%22%2338bdf8%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/setup.css">
+</head>
+<body>
+  <header>
+    <div class="brand">Safe<span>Sight</span></div>
+    <span class="page-name">Policy setup</span>
+    <div class="controls"><a class="nav-link" href="/">← Live monitor</a></div>
+  </header>
+
+  <div id="errorBanner" class="banner hidden"></div>
+  <div id="okBanner" class="banner ok hidden"></div>
+
+  <main class="setup">
+    <section class="card">
+      <h2>1. Upload your safety policy</h2>
+      <p class="muted-text">PDF up to 10 MB. Text is extracted with Amazon Textract, then Amazon Bedrock turns the
+        PPE requirements into zones. Nothing goes live until you approve it below.</p>
+      <div class="upload-row">
+        <label class="file-btn">
+          <input type="file" id="pdfInput" accept="application/pdf,.pdf">
+          <span id="fileLabel">Choose PDF…</span>
+        </label>
+        <button id="extractBtn" disabled>Extract requirements</button>
+        <button id="sampleBtn" class="secondary">Use sample policy</button>
+      </div>
+      <div id="progress" class="muted-text"></div>
+    </section>
+
+    <section class="card hidden" id="reviewCard">
+      <h2>2. Review and edit</h2>
+      <div id="extractMeta" class="muted-text"></div>
+      <ul id="warnings" class="warnings"></ul>
+      <details class="text-preview"><summary>Extracted text (first 1,500 characters)</summary><pre id="textPreview"></pre></details>
+      <p class="legend">
+        <span class="pill-cam">Camera-checked</span> gloves, face cover, head protection (Amazon Rekognition).
+        <span class="pill-off">Not camera-monitored</span> kept in the policy record, but the camera can't check it.
+      </p>
+      <div id="zones"></div>
+      <button id="addZoneBtn" class="secondary">+ Add zone</button>
+    </section>
+
+    <section class="card hidden" id="approveCard">
+      <h2>3. Approve</h2>
+      <label class="check"><input type="checkbox" id="replaceChk" checked>
+        Replace existing zones (zones not in this policy are removed; past incidents are kept)</label>
+      <div class="approve-row">
+        <button id="approveBtn">Approve &amp; publish zones</button>
+        <span class="muted-text">Writes the zones to DynamoDB and updates the live monitor's zone list.</span>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/setup.js"></script>
+</body>
+</html>
