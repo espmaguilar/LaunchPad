@@ -37,9 +37,14 @@ after each one with test steps for the user.
   safety_critical, required_ppe}]}` (one retry) -> review (edit/reorder/add/delete/safety/PPE) ->
   Approve -> DynamoDB `labscribe-procedures` (PK procedure_id). MOCK_MODE / Bedrock failure:
   heuristic "Step N:" parser with a warning. Demo manual `demo/color_change_lab.pdf`.
-- [ ] **B. Scribe**: every 3 s send the latest 2 frames to Bedrock vision -> `{action, objects[]}`;
-  live transcript panel; skip a frame if the previous call is still running. Mock: lines cycle
-  through the demo steps.
+- [x] **B. Scribe**: browser keeps a 2-frame ring (1 s apart, 640 px JPEG) and every 3 s POSTs it to
+  `/api/sessions/{id}/scribe` -> `scribe.describe` (Bedrock vision, strict "physical actions only"
+  prompt) -> `{action, objects[]}`. Per-session lock acquired without waiting: if the previous call is
+  still running the frames are SKIPPED (no backlog; also skipped client-side). Identical consecutive
+  actions merge (repeat count). Sessions live in memory (`sessions.py`; lost on restart) until Phase D/E.
+  Mock: `scribe.MOCK_SCRIPT` walks through the demo steps, works without a camera. Llama 4 Scout often
+  returns one JSON object per frame: `vision.parse_all` + `scribe.pick` keep the first with an action.
+  Real latency 0.7-1.8 s per call.
 - [ ] **C. Step matcher + feedback**: per transcript line, Bedrock (text) gets current + next step +
   last ~15 s -> `{status, confidence, evidence, mistake, mistake_type, what_went_wrong, how_to_fix}`.
   Advance on "done" >= 0.7 twice in a row; "next_step_detected" while current not done -> possible
@@ -59,7 +64,11 @@ after each one with test steps for the user.
 - `ingest.py`: PDF -> S3 -> text (Textract async, pypdf fallback). `procedures.py`: Bedrock steps
   prompt + retry, heuristic parser, normalize/validate. `store.py`: procedures in DynamoDB / mock JSON
   (`TableMissing` -> friendly 503 "run setup_aws.py").
-- `vision.py`: Bedrock image calls with automatic Nova Lite fallback + JSON parsing (Phases B-D).
+- `vision.py`: Bedrock image calls with automatic Nova Lite fallback + JSON parsing (`parse_all` for
+  multi-object replies).
+- `scribe.py`: scribe prompt, normalize/pick, mock script. `sessions.py`: in-memory sessions + transcript,
+  skip-when-busy, repeat merging. Endpoints: `POST /api/sessions {procedure_id}`, `GET /api/sessions/{id}?since=n`,
+  `POST /api/sessions/{id}/scribe {frames: [dataURL x2]}`, `POST /api/sessions/{id}/end`.
 - `voice.py`: Polly MP3 for any phrase, cached in memory + `audio_cache/`. Browser falls back to
   speechSynthesis; mute toggle in the topbar.
 - `ppe.py`: Rekognition person parsing (background filter via MIN_PERSON_AREA). `settings.py`:
@@ -67,10 +76,11 @@ after each one with test steps for the user.
 - `setup_aws.py`: creates the S3 bucket + `labscribe-procedures`; `--check` is read-only (also probes
   Textract, Polly, Bedrock text + vision).
 - `demo/make_lab_manual.py` -> `demo/color_change_lab.pdf`; `demo/pdfgen.py` tiny PDF writer.
-- `frontend/src`: `App.tsx` shell, `pages/Procedures.tsx` (list, upload, processing, review editor),
+- `frontend/src`: `App.tsx` shell (owns `useLab` from `lab.ts`: camera + session loop keeps running on
+  every page), `pages/LabSession.tsx` (feed, Scribe transcript panel, steps preview), `pages/Procedures.tsx` (list, upload, processing, review editor),
   `pages/Settings.tsx`, `voice.ts` (speak + mute + Safari unlock), `design.css` (Figma design) +
   `app.css` (additions). Rebuild: `cd frontend && npm run build`.
-- Tests: `test_procedures.py`, `test_parser.py`.
+- Tests: `test_procedures.py`, `test_scribe.py`, `test_parser.py`.
 
 ## Notes
 - Real test 2026-11-08: demo manual -> Textract + Llama 4 Scout in 6.2 s, 6 steps with visual expected

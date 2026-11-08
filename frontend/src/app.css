@@ -280,3 +280,34 @@ button.primary:disabled { opacity: 0.55; cursor: not-allowed; }
 .add-step { margin-top: 10px; width: 100%; border: 1px dashed #3a4048; background: transparent; color: var(--amber); border-radius: 10px; padding: 10px; display: flex; justify-content: center; gap: 6px; align-items: center; font-weight: 600; }
 .add-step:hover { background: #1a1710; }
 .small { font-size: 11px; }
+
+/* ===================== LabScribe (Phase B: scribe) ===================== */
+.session-actions { display: flex; gap: 8px; align-items: center; }
+.session-actions select { background: #14171c; border: 1px solid #2a2f37; color: #f3f4f6; border-radius: 8px; padding: 9px 10px; font-size: 12px; max-width: 320px; }
+.rec-dot { font-style: normal; font-size: 8px; font-weight: 700; color: #fff; background: var(--red); border-radius: 6px; padding: 1px 5px; margin-left: auto; }
+.scribe-panel { display: flex; flex-direction: column; min-height: 0; }
+.scribe-panel .rec { font-size: 9px; font-weight: 700; color: var(--muted); display: inline-flex; align-items: center; gap: 5px; }
+.scribe-panel .rec i { width: 7px; height: 7px; border-radius: 50%; background: #4b5563; }
+.scribe-panel .rec.on { color: #fca5a5; }
+.scribe-panel .rec.on i { background: var(--red); animation: recpulse 1.2s infinite; }
+@keyframes recpulse { 50% { opacity: 0.3; } }
+.scribe-log { flex: 1; overflow-y: auto; max-height: 420px; min-height: 260px; margin-top: 10px; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
+.scribe-line { display: grid; grid-template-columns: 38px 1fr; gap: 8px; padding: 7px 8px; border-radius: 8px; background: #111419; border: 1px solid #22262d; }
+.scribe-line time { font: 500 10px "DM Mono", monospace; color: var(--amber); padding-top: 1px; }
+.scribe-line p { margin: 0; font-size: 12px; line-height: 1.4; }
+.scribe-line p em { font-style: normal; color: var(--muted); font-size: 10px; }
+.scribe-line.idle p { color: #7c838e; }
+.scribe-line.idle time { color: #6b7280; }
+.obj-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.obj-chips span { font-size: 9px; color: #9aa1ab; background: #1a1e24; border-radius: 4px; padding: 1px 5px; }
+.scribe-foot { margin-top: 8px; font-size: 10px; color: #6b7280; }
+.scribe-foot .bad { color: #fca5a5; }
+.scribe-caption { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: 88%; background: rgba(10, 12, 15, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; padding: 6px 12px; font-size: 12px; color: #f3f4f6; text-align: center; backdrop-filter: blur(6px); }
+.steps-preview { margin-top: 16px; }
+.step-checklist { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.step-checklist li { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center; background: #14171c; border: 1px solid #262b33; border-radius: 10px; padding: 9px 12px; }
+.step-checklist li.safety { border-color: #5a4520; }
+.step-checklist .step-n { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: #1d2128; font: 600 11px "DM Mono", monospace; color: #9aa1ab; }
+.step-checklist b { display: block; font-size: 12px; font-weight: 500; }
+.step-checklist small { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; }

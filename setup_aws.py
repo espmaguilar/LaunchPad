@@ -186,9 +186,10 @@ def check_vision(session):
         try:
             resp = client.converse(
                 modelId=model,
-                messages=[{"role": "user", "content": [
+                messages=[{"role": "user", "content": [  # 2 images, like the Scribe sends
                     {"image": {"format": "png", "source": {"bytes": img}}},
-                    {"text": "What colour is this image? One word."}]}],
+                    {"image": {"format": "png", "source": {"bytes": img}}},
+                    {"text": "What colour are these two images? One word."}]}],
                 inferenceConfig={"maxTokens": 20},
             )
             said = "".join(b.get("text", "") for b in resp["output"]["message"]["content"]).strip()[:40]

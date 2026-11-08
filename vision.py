@@ -57,6 +57,24 @@ def call_model(images, system, text, max_tokens=400):
         raise
 
 
+def parse_all(text):
+    """Every top-level JSON object in a reply, in order (models sometimes return one per image)."""
+    cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+    dec, out, i = json.JSONDecoder(), [], 0
+    while True:
+        i = cleaned.find("{", i)
+        if i < 0:
+            return out
+        try:
+            obj, end = dec.raw_decode(cleaned, i)
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+        i = end
+
+
 def parse_json(text, kind="object"):
     """First JSON object (or array) in a model reply. Raises VisionError."""
     cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()

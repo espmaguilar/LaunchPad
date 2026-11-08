@@ -32,7 +32,13 @@ MAX_EXPECTED_ACTION_CHARS = 120
 # PPE names the vision check understands (free text is allowed too)
 COMMON_PPE = ["safety goggles", "gloves", "lab coat", "face mask"]
 
-# --- Vision model (scribe + PPE checks, later phases) ---
+# --- Scribe (Phase B) ---
+SCRIBE_INTERVAL_SECONDS = 3     # browser sends the latest frames this often
+SCRIBE_FRAME_GAP_SECONDS = 1    # the 2 frames sent are this far apart (motion context)
+SCRIBE_FRAME_MAX_WIDTH = 640    # px; downscaled in the browser before upload
+MAX_FRAME_BYTES = 2 * 1024 * 1024
+
+# --- Vision model (scribe + PPE checks) ---
 # BEDROCK_MODEL_ID must accept images; if it doesn't, this fallback is used.
 VISION_FALLBACK_MODEL_ID = _env("VISION_FALLBACK_MODEL_ID", "us.amazon.nova-lite-v1:0")
 

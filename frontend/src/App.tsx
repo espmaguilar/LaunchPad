@@ -2,15 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type Health, type SettingsResponse } from "./api";
 import { isMuted, setMuted } from "./voice";
 import { Icon, Logo } from "./ui";
+import { useLab } from "./lab";
+import LabSession from "./pages/LabSession";
 import Procedures from "./pages/Procedures";
 import SettingsPage from "./pages/Settings";
 
-export type Page = "Procedures" | "Settings";
+export type Page = "Lab session" | "Procedures" | "Settings";
 const PAGES: [Page, string, string][] = [
+  ["Lab session", "monitor", "session"],
   ["Procedures", "flask", "procedures"],
   ["Settings", "settings", "settings"],
 ];
-const pageFromHash = (): Page => PAGES.find(([, , h]) => location.hash.startsWith(`#/${h}`))?.[0] ?? "Procedures";
+const pageFromHash = (): Page => PAGES.find(([, , h]) => location.hash.startsWith(`#/${h}`))?.[0] ?? "Lab session";
 
 export default function App() {
   const [page, setPageState] = useState<Page>(pageFromHash);
@@ -38,6 +41,8 @@ export default function App() {
     return () => window.clearInterval(t);
   }, [loadHealth]);
 
+  const lab = useLab(health);
+  const recording = !!lab.session && !lab.session.ended_at;
   const ok = !!health?.ok;
   return (
     <div className="app">
@@ -57,13 +62,9 @@ export default function App() {
               <button key={label} className={page === label ? "active" : ""} onClick={() => setPage(label)}>
                 <Icon name={icon} />
                 <span>{label}</span>
+                {label === "Lab session" && recording && <em className="rec-dot" title="Session recording">REC</em>}
               </button>
             ))}
-            <button className="nav-soon" disabled title="Coming in the next phase: camera scribe + step tracking">
-              <Icon name="monitor" />
-              <span>Lab session</span>
-              <em className="soon">soon</em>
-            </button>
           </nav>
         </div>
         <div className="side-bottom">
@@ -88,6 +89,11 @@ export default function App() {
           </div>
           <div className="top-actions">
             {health?.mock_mode && <span className="demo-badge mock" title="MOCK_MODE=true: no AWS calls">MOCK</span>}
+            <button className={`camera-pill ${lab.stream ? "live" : "offline"}`} disabled={lab.starting}
+              onClick={() => (lab.stream ? lab.stopCamera() : lab.startCamera())} title={lab.stream ? "Stop camera" : "Start camera"}>
+              <i />
+              {lab.starting ? "Starting…" : lab.stream ? "Camera on" : "Start camera"}
+            </button>
             <button className={`voice ${muted ? "" : "on"}`} onClick={() => { setMuted(!muted); setMutedState(!muted); }}
               aria-pressed={!muted} title="Voice guidance (Amazon Polly)">
               <Icon name={muted ? "mute" : "sound"} size={16} /> Voice {muted ? "off" : "on"}
@@ -104,6 +110,7 @@ export default function App() {
               Missing settings in .env: {health.missing_settings.join(", ")}. Or set MOCK_MODE=true to try LabScribe offline.
             </div>
           )}
+          {page === "Lab session" && <LabSession lab={lab} health={health} goProcedures={() => setPage("Procedures")} />}
           {page === "Procedures" && <Procedures health={health} />}
           {page === "Settings" && (
             <SettingsPage onSaved={(s) => setWorkspace(s.workspace_name)} muted={muted}

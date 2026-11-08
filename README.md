@@ -6,8 +6,8 @@ the current step, steps auto-advance with voice guidance, and mistakes are expla
 way a friendly lab partner would ("Hold on — you added vinegar before the food coloring.
 Step 3 comes first."). At the end it writes a lab record.
 
-> Built for a hackathon (AWS track). Phase A (procedure ingestion) is done; the live
-> session phases are in progress — see [Status](#status).
+> Built for a hackathon (AWS track). Phases A-B are done; step tracking, feedback and the
+> lab record are in progress — see [Status](#status).
 
 ## How it works
 
@@ -52,18 +52,21 @@ The built UI is committed, so Node is only needed to change it:
    household items only: water, food coloring, baking soda, vinegar).
 2. Review the 6 extracted steps: edit, reorder, mark safety-critical, set PPE.
 3. **Approve & save**.
+4. **Lab session** → pick the procedure → **Start camera** → **Start session**. The Scribe panel
+   logs what your hands do every 3 s (mock mode scripts the demo without a camera).
 
 ## Tests
 
 ```bash
 python test_procedures.py   # ingestion: Bedrock retry, normalize, validate, demo manual, store
+python test_scribe.py       # scribe: parsing, per-frame replies, repeats, skip-when-busy, errors
 python test_parser.py       # Rekognition person parsing (background filter)
 ```
 
 ## Status
 
 - [x] **A. Procedure ingestion** — PDF → S3 → Textract → Bedrock steps → review → DynamoDB
-- [ ] B. Scribe — camera → action transcript (Bedrock vision, every 3 s)
+- [x] **B. Scribe** — camera → live action transcript (Bedrock vision, 2 frames every 3 s, no backlog)
 - [ ] C. Step matcher + mistake feedback + voice guidance
 - [ ] D. Safety (PPE via Bedrock vision) + deviations log
 - [ ] E. Lab record with "Mistakes & tips"

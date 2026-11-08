@@ -1,9 +1,10 @@
 """LabScribe API: an AI lab partner.
 
-Phase A (this file today): procedure ingestion
+Phase A: procedure ingestion
   lab manual PDF -> S3 -> Textract (pypdf fallback) -> Bedrock steps JSON -> review -> DynamoDB
-Later phases add the Scribe (camera -> action transcript), the step matcher, PPE checks,
-mistake feedback and the lab record.
+Phase B: the Scribe
+  camera (latest 2 frames every 3 s) -> Bedrock vision -> timestamped action transcript
+Later phases add the step matcher, mistake feedback, PPE checks and the lab record.
 
 Run: uvicorn main:app --reload --reload-include .env
 """
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 import config
 import ingest
 import procedures
+import sessions
 import settings
 import store
 import vision
@@ -67,6 +69,8 @@ def health():
         "region": config.AWS_REGION,
         "model": config.BEDROCK_MODEL_ID,
         "vision_model": vision.active_model(),
+        "scribe": {"interval": config.SCRIBE_INTERVAL_SECONDS, "frame_gap": config.SCRIBE_FRAME_GAP_SECONDS,
+                   "max_width": config.SCRIBE_FRAME_MAX_WIDTH},
         "missing_settings": missing,
     }
 
@@ -184,6 +188,67 @@ def delete_procedure(procedure_id: str):
     except AWS_ERRORS as e:
         raise aws_error(e)
     return {"ok": True}
+
+
+# ---------- lab sessions + scribe (Phase B) ----------
+class SessionStart(BaseModel):
+    procedure_id: str
+
+
+@app.post("/api/sessions")
+def start_session(req: SessionStart):
+    try:
+        proc = store.get_procedure(req.procedure_id)
+    except AWS_ERRORS as e:
+        raise aws_error(e)
+    if proc is None:
+        raise HTTPException(404, "procedure not found")
+    return sessions.public(sessions.start(proc))
+
+
+def _session_or_404(sid):
+    try:
+        return sessions.get(sid)
+    except sessions.SessionError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/sessions/{sid}")
+def session_state(sid: str, since: int = 0):
+    return sessions.public(_session_or_404(sid), since)
+
+
+class Frames(BaseModel):
+    frames: list[str] = []  # 1-2 JPEG data URLs, oldest first
+
+
+@app.post("/api/sessions/{sid}/scribe")
+def scribe_frames(sid: str, req: Frames):
+    """Latest frames -> one transcript line. {skipped: true} if the previous call is still running."""
+    _session_or_404(sid)
+    if len(req.frames) > 2:
+        raise HTTPException(422, "send at most 2 frames")
+    frames = []
+    for f in req.frames:
+        try:
+            data = base64.b64decode(f.split(",", 1)[1] if f.startswith("data:") else f, validate=True)
+        except (binascii.Error, ValueError):
+            raise HTTPException(400, "frame is not valid base64")
+        if len(data) > config.MAX_FRAME_BYTES:
+            raise HTTPException(413, "frame larger than 2 MB")
+        frames.append(data)
+    if not frames and not config.MOCK_MODE:
+        raise HTTPException(422, "no frames")
+    try:
+        return sessions.scribe_frames(sid, frames)
+    except sessions.SessionError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/sessions/{sid}/end")
+def end_session(sid: str):
+    _session_or_404(sid)
+    return sessions.public(sessions.end(sid))
 
 
 # ---------- voice ----------

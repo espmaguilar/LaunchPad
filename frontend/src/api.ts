@@ -8,6 +8,7 @@ export interface Health {
   region: string;
   model: string;
   vision_model: string;
+  scribe: { interval: number; frame_gap: number; max_width: number };
   missing_settings: string[];
 }
 export interface Step {
@@ -40,6 +41,37 @@ export interface ManualDraft {
   warnings: string[];
   title: string;
   steps: Step[];
+}
+export interface ScribeLine {
+  time: string;
+  elapsed: number;
+  action: string;
+  objects: string[];
+  model: string;
+  ms: number;
+  repeat: number;
+  last_time?: string;
+  last_elapsed?: number;
+}
+export interface ScribeResult {
+  line?: ScribeLine;
+  new_line?: boolean;
+  skipped?: boolean;
+  error?: string;
+}
+export interface LabSession {
+  session_id: string;
+  procedure_id: string;
+  procedure: { title: string; steps: Step[] };
+  started_at: string;
+  ended_at: string | null;
+  transcript: ScribeLine[];
+  line_count: number;
+  elapsed: number;
+  ticks: number;
+  skipped: number;
+  errors: number;
+  last_error: string | null;
 }
 export interface Settings {
   workspace_name: string;
