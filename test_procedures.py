@@ -69,6 +69,7 @@ h = procedures.normalize(procedures.heuristic_extract(text))
 assert len(h["steps"]) == 6, [s["instruction"] for s in h["steps"]]
 assert h["steps"][0]["safety_critical"] and h["steps"][0]["required_ppe"] == ["safety goggles"]
 assert h["steps"][2]["instruction"].endswith("color is even.")      # wrapped line joined
+assert h["steps"][5]["instruction"].endswith("rinse the cup.")      # "Questions" heading not glued on
 assert [s["safety_critical"] for s in h["steps"]] == [True, False, False, False, True, False]
 
 # 5. mock store round trip

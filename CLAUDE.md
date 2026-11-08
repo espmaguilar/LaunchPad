@@ -45,12 +45,18 @@ after each one with test steps for the user.
   Mock: `scribe.MOCK_SCRIPT` walks through the demo steps, works without a camera. Llama 4 Scout often
   returns one JSON object per frame: `vision.parse_all` + `scribe.pick` keep the first with an action.
   Real latency 0.7-1.8 s per call.
-- [ ] **C. Step matcher + feedback**: per transcript line, Bedrock (text) gets current + next step +
-  last ~15 s -> `{status, confidence, evidence, mistake, mistake_type, what_went_wrong, how_to_fix}`.
-  Advance on "done" >= 0.7 twice in a row; "next_step_detected" while current not done -> possible
-  skipped step; mistakes need 2 consecutive detections >= 0.7. Polly: "Step N complete. Next: ..."
-  and friendly corrections. Checklist, big current-step card, evidence, Mark done / Undo,
-  Feedback panel (time, snapshot, what went wrong, how to fix, "Got it").
+- [x] **C. Step matcher + feedback** (`matcher.py`, state machine in `sessions.py`): after every scribe tick,
+  Bedrock (text) gets the step list, current + next step and the transcript since the current step started
+  (max 15 s) -> `{status, confidence, evidence, mistake, mistake_type, what_went_wrong, how_to_fix}`.
+  Advance on "done" >= 0.7 twice in a row; same mistake type twice -> feedback item + snapshot + Polly
+  "Hold on — ..." (once per step+type); "next_step_detected" twice -> "Possible skipped step". Manual
+  Mark done / Undo; "Got it" dismisses. Mistakes on a step that then completes are marked corrected.
+  Llama 4 Scout quirks handled: compound steps ("add ... and stir") stayed in_progress -> a focused
+  yes/no `confirm_done` call (only when in_progress) checks the step's DONE-WHEN condition; it must see the
+  action/result, not just objects. "wrong_material" that is a later step's material -> `refine` makes it
+  wrong_order. Real-model scenario suite: 28/28 after these fixes (avg 0.9 s per check).
+  Mock: `scribe.MOCK_SCRIPT` lines carry demo-step tags (incl. a vinegar-before-coloring mistake) and
+  `matcher.mock_check` is deterministic.
 - [ ] **D. Safety + deviations**: before safety_critical steps, Bedrock vision checks required PPE;
   block advancing + "Put on <gear> before continuing." Log deviations (skipped, out of order,
   wrong action, PPE missing, mistakes) with snapshot to S3 + DynamoDB.
@@ -68,7 +74,8 @@ after each one with test steps for the user.
   multi-object replies).
 - `scribe.py`: scribe prompt, normalize/pick, mock script. `sessions.py`: in-memory sessions + transcript,
   skip-when-busy, repeat merging. Endpoints: `POST /api/sessions {procedure_id}`, `GET /api/sessions/{id}?since=n`,
-  `POST /api/sessions/{id}/scribe {frames: [dataURL x2]}`, `POST /api/sessions/{id}/end`.
+  `POST /api/sessions/{id}/scribe {frames: [dataURL x2]}`, `POST /api/sessions/{id}/end`, `GET /api/sessions` (list),
+  `POST /api/sessions/{id}/steps/done|undo`, `POST /api/sessions/{id}/feedback/{fid}/dismiss`, `GET /api/sessions/{id}/snapshots/{snap}`.
 - `voice.py`: Polly MP3 for any phrase, cached in memory + `audio_cache/`. Browser falls back to
   speechSynthesis; mute toggle in the topbar.
 - `ppe.py`: Rekognition person parsing (background filter via MIN_PERSON_AREA). `settings.py`:
@@ -76,11 +83,19 @@ after each one with test steps for the user.
 - `setup_aws.py`: creates the S3 bucket + `labscribe-procedures`; `--check` is read-only (also probes
   Textract, Polly, Bedrock text + vision).
 - `demo/make_lab_manual.py` -> `demo/color_change_lab.pdf`; `demo/pdfgen.py` tiny PDF writer.
+- UI: second Figma design ("LabScribe AI Lab Partner", light teal theme) in `frontend/src/design.css`; `app.css` = additions
+  (states, layout fixes for ~1170 px windows). Pages: Live Session (steps rail, current step + AI confidence, camera with
+  live scribe caption, Mark done/Undo/End, success toast, Scribe panel with Export, Coach feedback with "Got it"),
+  Procedures (stepper, upload/sample, processing, review cards with inline edit + up/down reorder, publish card:
+  Approve & start session / save only, saved library), Lab Records (from real session data: timeline with evidence +
+  snapshots, deviations, mistakes; print-to-PDF; Bedrock tips come in Phase E), Instructor View (KPIs, sessions,
+  most common mistakes by step - real data from `GET /api/sessions`), Settings (camera, coach voice, Polly voice +
+  test, background filter, workspace; "Block on safety steps" shown disabled until Phase D).
 - `frontend/src`: `App.tsx` shell (owns `useLab` from `lab.ts`: camera + session loop keeps running on
-  every page), `pages/LabSession.tsx` (feed, Scribe transcript panel, steps preview), `pages/Procedures.tsx` (list, upload, processing, review editor),
+  every page), `pages/LabSession.tsx`, `pages/Procedures.tsx`, `pages/Records.tsx`, `pages/Instructor.tsx` (list, upload, processing, review editor),
   `pages/Settings.tsx`, `voice.ts` (speak + mute + Safari unlock), `design.css` (Figma design) +
   `app.css` (additions). Rebuild: `cd frontend && npm run build`.
-- Tests: `test_procedures.py`, `test_scribe.py`, `test_parser.py`.
+- Tests: `test_procedures.py`, `test_scribe.py`, `test_matcher.py`, `test_parser.py`.
 
 ## Notes
 - Real test 2026-11-08: demo manual -> Textract + Llama 4 Scout in 6.2 s, 6 steps with visual expected

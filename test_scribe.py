@@ -98,7 +98,7 @@ config.MOCK_MODE = True
 s2 = sessions.start(proc)
 gate = threading.Event()
 orig = scribe.mock_line
-scribe.mock_line = lambda tick: (gate.wait(2), orig(tick))[1]
+scribe.mock_line = lambda tick: (gate.wait(2), orig(tick))[1]  # returns (line, tag)
 results = []
 ths = [threading.Thread(target=lambda: results.append(sessions.scribe_frames(s2["session_id"], []))) for _ in range(5)]
 [t.start() for t in ths]

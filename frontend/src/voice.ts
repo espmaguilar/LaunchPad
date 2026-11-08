@@ -66,7 +66,10 @@ function speakFallback(text: string) {
 /** Speak a guidance phrase (Polly, cached; browser voice if Polly is unavailable). */
 export function speak(text: string, force = false) {
   if ((muted && !force) || !audio || !text) return;
-  audio.onerror = () => speakFallback(text);
+  // Polly can fail two ways at once (load error + rejected play()): fall back only once.
+  let fellBack = false;
+  const fallback = () => { if (!fellBack) { fellBack = true; speakFallback(text); } };
+  audio.onerror = fallback;
   audio.src = `/api/voice?text=${encodeURIComponent(text)}`;
-  audio.play().catch(() => speakFallback(text));
+  audio.play().catch(fallback);
 }

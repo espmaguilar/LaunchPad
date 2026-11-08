@@ -6,8 +6,8 @@ the current step, steps auto-advance with voice guidance, and mistakes are expla
 way a friendly lab partner would ("Hold on — you added vinegar before the food coloring.
 Step 3 comes first."). At the end it writes a lab record.
 
-> Built for a hackathon (AWS track). Phases A-B are done; step tracking, feedback and the
-> lab record are in progress — see [Status](#status).
+> Built for a hackathon (AWS track). Phases A-C are done; PPE safety checks and the AI-written
+> lab record are next — see [Status](#status).
 
 ## How it works
 
@@ -60,6 +60,7 @@ The built UI is committed, so Node is only needed to change it:
 ```bash
 python test_procedures.py   # ingestion: Bedrock retry, normalize, validate, demo manual, store
 python test_scribe.py       # scribe: parsing, per-frame replies, repeats, skip-when-busy, errors
+python test_matcher.py      # step matcher + state machine: advance, mistakes, skips, undo, done-check
 python test_parser.py       # Rekognition person parsing (background filter)
 ```
 
@@ -67,7 +68,7 @@ python test_parser.py       # Rekognition person parsing (background filter)
 
 - [x] **A. Procedure ingestion** — PDF → S3 → Textract → Bedrock steps → review → DynamoDB
 - [x] **B. Scribe** — camera → live action transcript (Bedrock vision, 2 frames every 3 s, no backlog)
-- [ ] C. Step matcher + mistake feedback + voice guidance
+- [x] **C. Step matcher + mistake feedback** — auto-advance on 2 confident checks, friendly spoken corrections citing the manual, manual Mark done / Undo
 - [ ] D. Safety (PPE via Bedrock vision) + deviations log
 - [ ] E. Lab record with "Mistakes & tips"
 

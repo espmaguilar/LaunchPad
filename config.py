@@ -38,6 +38,18 @@ SCRIBE_FRAME_GAP_SECONDS = 1    # the 2 frames sent are this far apart (motion c
 SCRIBE_FRAME_MAX_WIDTH = 640    # px; downscaled in the browser before upload
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 
+# --- Step matcher (Phase C) ---
+MATCH_WINDOW_SECONDS = 15       # transcript the matcher sees (and never before the current step started)
+MATCH_MIN_CONFIDENCE = 0.7      # below this a mistake / skip check doesn't count
+# LENIENT_ADVANCE: move on as soon as the student does anything resembling the current step
+# ("in_progress", "done", or already doing the next step) on ONE check at DONE_MIN_CONFIDENCE.
+# False = strict: only "done" >= MATCH_MIN_CONFIDENCE on DONE_CHECKS consecutive checks.
+LENIENT_ADVANCE = True
+DONE_MIN_CONFIDENCE = 0.5 if LENIENT_ADVANCE else MATCH_MIN_CONFIDENCE
+DONE_CHECKS = 1 if LENIENT_ADVANCE else 2  # consecutive qualifying checks before advancing
+MISTAKE_CHECKS = 2              # consecutive confident detections of the same mistake before flagging
+SKIP_CHECKS = 2                 # consecutive "next_step_detected" before "Possible skipped step"
+
 # --- Vision model (scribe + PPE checks) ---
 # BEDROCK_MODEL_ID must accept images; if it doesn't, this fallback is used.
 VISION_FALLBACK_MODEL_ID = _env("VISION_FALLBACK_MODEL_ID", "us.amazon.nova-lite-v1:0")

@@ -4,7 +4,8 @@ Phase A: procedure ingestion
   lab manual PDF -> S3 -> Textract (pypdf fallback) -> Bedrock steps JSON -> review -> DynamoDB
 Phase B: the Scribe
   camera (latest 2 frames every 3 s) -> Bedrock vision -> timestamped action transcript
-Later phases add the step matcher, mistake feedback, PPE checks and the lab record.
+Phase C: step matcher + mistake feedback + voice guidance (2 consecutive confident checks)
+Later phases add PPE checks, persisted deviations and the lab record.
 
 Run: uvicorn main:app --reload --reload-include .env
 """
@@ -206,6 +207,17 @@ def start_session(req: SessionStart):
     return sessions.public(sessions.start(proc))
 
 
+@app.get("/api/sessions")
+def list_sessions():
+    """Summaries of sessions in memory (no transcripts). Lab Records + Instructor View."""
+    out = []
+    for s in sessions.list_all():
+        v = sessions.public(s, since=10**9)
+        v.pop("transcript", None)
+        out.append(v)
+    return out
+
+
 def _session_or_404(sid):
     try:
         return sessions.get(sid)
@@ -243,6 +255,44 @@ def scribe_frames(sid: str, req: Frames):
         return sessions.scribe_frames(sid, frames)
     except sessions.SessionError as e:
         raise HTTPException(409, str(e))
+
+
+@app.post("/api/sessions/{sid}/steps/done")
+def mark_step_done(sid: str):
+    """Manual override: the current step is done."""
+    _session_or_404(sid)
+    try:
+        return sessions.mark_done(sid)
+    except sessions.SessionError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/sessions/{sid}/steps/undo")
+def undo_step(sid: str):
+    """Manual override: re-open the last completed step."""
+    _session_or_404(sid)
+    try:
+        return sessions.undo(sid)
+    except sessions.SessionError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/sessions/{sid}/feedback/{fid}/dismiss")
+def dismiss_feedback(sid: str, fid: str):
+    _session_or_404(sid)
+    try:
+        return sessions.dismiss(sid, fid)
+    except sessions.SessionError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/sessions/{sid}/snapshots/{snap_id}")
+def session_snapshot(sid: str, snap_id: str):
+    _session_or_404(sid)
+    data = sessions.snapshot(sid, snap_id)
+    if data is None:
+        raise HTTPException(404, "snapshot not found")
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"})
 
 
 @app.post("/api/sessions/{sid}/end")

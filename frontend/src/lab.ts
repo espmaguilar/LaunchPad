@@ -4,8 +4,8 @@
 // No backlog: if the previous scribe call hasn't returned, the tick is skipped.
 // MOCK_MODE works without a camera (the server scripts the transcript).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, post, type Health, type LabSession, type ScribeLine, type ScribeResult } from "./api";
-import { unlockAudio } from "./voice";
+import { api, post, type Health, type LabSession, type ScribeLine, type ScribeResult, type SessionEvent } from "./api";
+import { speak, unlockAudio } from "./voice";
 
 export interface LabState {
   stream: MediaStream | null;
@@ -17,6 +17,7 @@ export interface LabState {
   scribeError: string | null;
   error: string | null;
   starting: boolean;
+  coach: { text: string; type: SessionEvent["type"]; at: number } | null; // latest spoken line
 }
 
 export function useLab(health: Health | null) {
@@ -32,7 +33,23 @@ export function useLab(health: Health | null) {
   const sessionRef = useRef<LabSession | null>(null);
   const [s, setS] = useState<LabState>({
     stream: null, session: null, lines: [], lastMs: null, model: null, skipped: 0, scribeError: null, error: null, starting: false,
+    coach: null,
   });
+
+  // Apply a server state (progress, feedback) and speak its events (step done, corrections).
+  const applyState = useCallback((st?: LabSession) => {
+    if (!st) return;
+    const { transcript: _t, events, ...rest } = st;
+    void _t;
+    sessionRef.current = { ...(sessionRef.current as LabSession), ...rest, transcript: [] };
+    const evs = events ?? [];
+    if (evs.length) speak(evs.map((e) => e.voice).join(" "));
+    setS((x) => ({
+      ...x,
+      session: x.session ? { ...x.session, ...rest } : x.session,
+      coach: evs.length ? { text: evs[evs.length - 1].voice, type: evs[evs.length - 1].type, at: Date.now() } : x.coach,
+    }));
+  }, []);
 
   const snapshot = useCallback(() => {
     const v = video.current;
@@ -65,6 +82,7 @@ export function useLab(health: Health | null) {
     try {
       const r = await post<ScribeResult>(`/api/sessions/${sess.session_id}/scribe`, { frames });
       if (sessionRef.current?.session_id !== sess.session_id) return;
+      applyState(r.state);
       if (r.line) {
         const line = r.line;
         setS((x) => ({
@@ -82,7 +100,7 @@ export function useLab(health: Health | null) {
     } finally {
       inFlight.current = false;
     }
-  }, [mock]);
+  }, [mock, applyState]);
 
   useEffect(() => {
     if (!s.session || s.session.ended_at) return;
@@ -123,7 +141,9 @@ export function useLab(health: Health | null) {
     try {
       const sess = await post<LabSession>("/api/sessions", { procedure_id: procedureId });
       sessionRef.current = sess;
-      setS((x) => ({ ...x, session: sess, lines: [], skipped: 0, scribeError: null, lastMs: null }));
+      setS((x) => ({ ...x, session: sess, lines: [], skipped: 0, scribeError: null, lastMs: null, coach: null }));
+      const first = sess.procedure.steps[0];
+      if (first) speak(`Let's start. Step 1: ${first.instruction}`);
     } catch (e) {
       setS((x) => ({ ...x, error: `Could not start the session: ${(e as Error).message}` }));
     }
@@ -140,6 +160,19 @@ export function useLab(health: Health | null) {
       setS((x) => ({ ...x, error: (e as Error).message }));
     }
   }, []);
+
+  const act = useCallback(async (path: string) => {
+    const sess = sessionRef.current;
+    if (!sess) return;
+    try {
+      applyState(await post<LabSession>(`/api/sessions/${sess.session_id}/${path}`));
+    } catch (e) {
+      setS((x) => ({ ...x, error: (e as Error).message }));
+    }
+  }, [applyState]);
+  const markDone = useCallback(() => act("steps/done"), [act]);
+  const undo = useCallback(() => act("steps/undo"), [act]);
+  const dismiss = useCallback((id: string) => act(`feedback/${id}/dismiss`), [act]);
 
   const closeSession = useCallback(() => {
     sessionRef.current = null;
@@ -158,5 +191,5 @@ export function useLab(health: Health | null) {
 
   useEffect(() => () => s.stream?.getTracks().forEach((t) => t.stop()), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { ...s, startCamera, stopCamera, startSession, endSession, closeSession, resync };
+  return { ...s, startCamera, stopCamera, startSession, endSession, closeSession, resync, markDone, undo, dismiss };
 }

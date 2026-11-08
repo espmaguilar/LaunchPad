@@ -17,3 +17,8 @@ export function ago(iso: string) {
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   return `${Math.round(s / 3600)} h ago`;
 }
+
+export const mmss = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+export const hhmmss = (s: number) =>
+  `${String(Math.floor(s / 3600)).padStart(2, "0")}:${mmss(s % 3600)}`;
+export const pad2 = (n: number) => String(n).padStart(2, "0");

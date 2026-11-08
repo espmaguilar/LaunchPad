@@ -1,34 +1,43 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Health, type SettingsResponse } from "./api";
-import { isMuted, setMuted } from "./voice";
-import { Icon, Logo } from "./ui";
+import { hhmmss } from "./format";
 import { useLab } from "./lab";
+import { Icon, Logo, type IconName } from "./ui";
+import { isMuted, setMuted } from "./voice";
+import Instructor from "./pages/Instructor";
 import LabSession from "./pages/LabSession";
 import Procedures from "./pages/Procedures";
+import Records from "./pages/Records";
 import SettingsPage from "./pages/Settings";
 
-export type Page = "Lab session" | "Procedures" | "Settings";
-const PAGES: [Page, string, string][] = [
-  ["Lab session", "monitor", "session"],
-  ["Procedures", "flask", "procedures"],
-  ["Settings", "settings", "settings"],
+export type Page = "live" | "procedures" | "records" | "instructor" | "settings";
+const NAV: { page: Page; label: string; icon: IconName }[] = [
+  { page: "live", label: "Live Session", icon: "live" },
+  { page: "procedures", label: "Procedures", icon: "file" },
+  { page: "records", label: "Lab Records", icon: "records" },
+  { page: "instructor", label: "Instructor View", icon: "users" },
+  { page: "settings", label: "Settings", icon: "settings" },
 ];
-const pageFromHash = (): Page => PAGES.find(([, , h]) => location.hash.startsWith(`#/${h}`))?.[0] ?? "Lab session";
+const pageFromHash = (): Page => NAV.find((n) => location.hash === `#/${n.page}`)?.page ?? "live";
 
 export default function App() {
   const [page, setPageState] = useState<Page>(pageFromHash);
   const [health, setHealth] = useState<Health | null>(null);
   const [workspace, setWorkspace] = useState("LabScribe");
   const [muted, setMutedState] = useState(isMuted());
+  const [recordId, setRecordId] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const lab = useLab(health);
 
-  const setPage = (p: Page) => {
-    history.replaceState(null, "", `#/${PAGES.find(([n]) => n === p)![2]}`);
+  const setPage = useCallback((p: Page) => {
+    history.replaceState(null, "", `#/${p}`);
     setPageState(p);
-  };
+  }, []);
   useEffect(() => {
     const onHash = () => setPageState(pageFromHash());
     window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => { window.removeEventListener("hashchange", onHash); window.clearInterval(t); };
   }, []);
 
   const loadHealth = useCallback(async () => {
@@ -41,82 +50,90 @@ export default function App() {
     return () => window.clearInterval(t);
   }, [loadHealth]);
 
-  const lab = useLab(health);
-  const recording = !!lab.session && !lab.session.ended_at;
-  const ok = !!health?.ok;
+  const toggleVoice = () => { setMuted(!muted); setMutedState(!muted); };
+  const sess = lab.session;
+  const recording = !!sess && !sess.ended_at;
+  const elapsed = sess ? ((sess.ended_at ? new Date(sess.ended_at).getTime() : now) - new Date(sess.started_at).getTime()) / 1000 : 0;
+  const titles: Record<Page, string> = {
+    live: sess?.procedure.title || "Lab session",
+    procedures: "Procedure setup",
+    records: "Lab record",
+    instructor: "Instructor overview",
+    settings: "Settings",
+  };
+  const initials = workspace.split(/[\s·]+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 3).toUpperCase();
+
   return (
-    <div className="app">
+    <div className="app-shell">
       <aside className="sidebar">
-        <div>
-          <Logo />
-          <button className="company" onClick={() => setPage("Settings")} title="Workspace settings">
-            <span className="company-mark">{workspace.charAt(0).toUpperCase()}</span>
-            <span>
-              <b>{workspace}</b>
-              <small>{health?.mock_mode ? "Mock mode" : `AWS · ${health?.region || "…"}`}</small>
-            </span>
-            <span className="updown">⌃⌄</span>
-          </button>
-          <nav>
-            {PAGES.map(([label, icon]) => (
-              <button key={label} className={page === label ? "active" : ""} onClick={() => setPage(label)}>
-                <Icon name={icon} />
-                <span>{label}</span>
-                {label === "Lab session" && recording && <em className="rec-dot" title="Session recording">REC</em>}
-              </button>
-            ))}
-          </nav>
-        </div>
-        <div className="side-bottom">
-          <div className={`system-ok ${ok ? "" : "bad"}`}>
-            <i /> {ok ? (health?.mock_mode ? "Mock mode · no AWS calls" : "All systems operational") : "Check AWS setup"}
+        <Logo />
+        <button className="workspace" onClick={() => setPage("settings")} title="Workspace settings">
+          <div className="workspace-icon">{initials}</div>
+          <div>
+            <span>Workspace</span>
+            <strong>{workspace}</strong>
           </div>
-          <div className="aws">
-            <b>Powered by AWS</b>
-            <span>
-              Bedrock · Textract · Polly
-              <br />
-              Rekognition · DynamoDB · S3
-            </span>
+          <Icon name="chevron" size={15} />
+        </button>
+        <nav>
+          {NAV.map((item) => (
+            <button key={item.page} className={page === item.page ? "active" : ""} onClick={() => setPage(item.page)}>
+              <Icon name={item.icon} />
+              <span>{item.label}</span>
+              {item.page === "live" && recording && <i title="Session recording" />}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="tip-card">
+            <div className="tip-icon"><Icon name="spark" size={16} /></div>
+            <strong>{health?.mock_mode ? "Mock mode" : "LabScribe tip"}</strong>
+            <p>{health?.mock_mode ? "No AWS calls: the scribe plays a scripted demo run."
+              : health && !health.ok ? `Missing in .env: ${health.missing_settings.join(", ")}`
+                : "Keep your workspace in frame for the best step detection."}</p>
+          </div>
+          <div className="aws-badge">
+            <span>Powered by AWS</span>
+            <small>Bedrock · Textract · Polly<br />S3 · DynamoDB</small>
           </div>
         </div>
       </aside>
 
-      <div className="shell">
+      <div className="workspace-area">
         <header className="topbar">
-          <div className="topbar-title">
-            <span className="muted">AI lab partner</span>
+          <div className="top-title">
+            <span>{page === "live" ? (recording ? "Live procedure" : sess ? "Session ended" : "Live procedure") : workspace}</span>
+            <strong>{titles[page]}</strong>
           </div>
           <div className="top-actions">
-            {health?.mock_mode && <span className="demo-badge mock" title="MOCK_MODE=true: no AWS calls">MOCK</span>}
-            <button className={`camera-pill ${lab.stream ? "live" : "offline"}`} disabled={lab.starting}
+            {page === "live" && sess && (
+              <div className="timer"><Icon name="clock" size={16} /><span>{hhmmss(elapsed)}</span></div>
+            )}
+            <button className={`live-pill ${lab.stream ? "" : "off"}`} disabled={lab.starting}
               onClick={() => (lab.stream ? lab.stopCamera() : lab.startCamera())} title={lab.stream ? "Stop camera" : "Start camera"}>
-              <i />
-              {lab.starting ? "Starting…" : lab.stream ? "Camera on" : "Start camera"}
+              <i /> <span>{lab.starting ? "Starting…" : lab.stream ? "Camera live" : "Camera off"}</span>
             </button>
-            <button className={`voice ${muted ? "" : "on"}`} onClick={() => { setMuted(!muted); setMutedState(!muted); }}
-              aria-pressed={!muted} title="Voice guidance (Amazon Polly)">
-              <Icon name={muted ? "mute" : "sound"} size={16} /> Voice {muted ? "off" : "on"}
+            <button className={`voice-pill ${muted ? "" : "on"}`} onClick={toggleVoice} aria-pressed={!muted}>
+              <Icon name="volume" size={16} />
+              <span>Coach voice {muted ? "off" : "on"}</span>
             </button>
-            <button className="avatar" onClick={() => setPage("Settings")} title="Settings">
-              {workspace.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-              <span className="online" />
-            </button>
+            <button className="avatar" onClick={() => setPage("settings")} title={workspace}>{initials.slice(0, 2)}</button>
           </div>
         </header>
-        <main>
-          {health && !health.ok && (
-            <div className="banner error app-banner">
-              Missing settings in .env: {health.missing_settings.join(", ")}. Or set MOCK_MODE=true to try LabScribe offline.
-            </div>
+        <div className="page-scroll">
+          {page === "live" && (
+            <LabSession lab={lab} health={health}
+              openRecord={(id) => { setRecordId(id); setPage("records"); }} goProcedures={() => setPage("procedures")} />
           )}
-          {page === "Lab session" && <LabSession lab={lab} health={health} goProcedures={() => setPage("Procedures")} />}
-          {page === "Procedures" && <Procedures health={health} />}
-          {page === "Settings" && (
-            <SettingsPage onSaved={(s) => setWorkspace(s.workspace_name)} muted={muted}
-              setMuted={(v) => { setMuted(v); setMutedState(v); }} />
+          {page === "procedures" && (
+            <Procedures health={health} startSession={async (id) => { await lab.startSession(id); setPage("live"); }} />
           )}
-        </main>
+          {page === "records" && <Records selected={recordId} setSelected={setRecordId} />}
+          {page === "instructor" && <Instructor openRecord={(id) => { setRecordId(id); setPage("records"); }} />}
+          {page === "settings" && (
+            <SettingsPage lab={lab} muted={muted} toggleVoice={toggleVoice} onSaved={(s) => setWorkspace(s.workspace_name)} />
+          )}
+        </div>
       </div>
     </div>
   );

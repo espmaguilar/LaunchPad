@@ -28,21 +28,32 @@ Return ONLY ONE JSON object for BOTH frames together (describe the change betwee
 no markdown, not one object per frame:
 {"action": "<sentence>", "objects": ["<object>", ...]}"""
 
-# Mock transcript: (action, objects). One line per scribe tick; loops.
+# Mock transcript for the demo manual (Color-Change Reaction), one line per scribe tick; loops.
+# (action, objects, tag). tag tells the mock matcher which demo step the line belongs to.
+# Each step is shown on 2 consecutive ticks (the matcher needs 2 confident checks to advance),
+# and there's one deliberate mistake - vinegar while step 3 (food coloring) is current - so the
+# feedback flow can be demonstrated offline.
+_VINEGAR_EARLY = {"kind": "mistake", "during": 3, "mistake_type": "wrong_order",
+                  "what_went_wrong": "You poured vinegar before adding the food coloring.",
+                  "how_to_fix": "Step 3 says to add 3 drops of blue food coloring first."}
 MOCK_SCRIPT = [
-    ("No visible action", ["clear cup", "safety goggles", "spoon"]),
-    ("Picking up safety goggles from the bench", ["safety goggles"]),
-    ("Putting safety goggles on over the eyes", ["safety goggles"]),
-    ("Pouring water from a bottle into a clear cup", ["water bottle", "clear cup"]),
-    ("Water now fills the clear cup about halfway", ["clear cup", "water"]),
-    ("Squeezing drops of blue liquid into the cup", ["blue food coloring bottle", "clear cup"]),
-    ("Stirring the blue water with a spoon", ["spoon", "clear cup", "blue liquid"]),
-    ("Scooping white powder with a measuring spoon", ["measuring spoon", "white powder"]),
-    ("Adding white powder to the blue water and stirring", ["measuring spoon", "clear cup"]),
-    ("Pouring clear liquid from a bottle into the cup", ["vinegar bottle", "clear cup"]),
-    ("Blue foam bubbling up inside the cup", ["clear cup", "blue foam"]),
-    ("Pouring the cup's contents into the sink", ["clear cup", "sink"]),
-    ("Rinsing the empty cup under the tap", ["clear cup", "tap"]),
+    ("No visible action", ["clear cup", "safety goggles", "spoon"], None),
+    ("Picking up safety goggles from the bench", ["safety goggles"], {"step": 1, "kind": "progress"}),
+    ("Putting safety goggles on over the eyes", ["safety goggles"], {"step": 1, "kind": "done"}),
+    ("Wearing safety goggles with hands on the bench", ["safety goggles"], {"step": 1, "kind": "done"}),
+    ("Pouring water from a bottle into a clear cup", ["water bottle", "clear cup"], {"step": 2, "kind": "done"}),
+    ("Water now fills the clear cup about halfway", ["clear cup", "water"], {"step": 2, "kind": "done"}),
+    ("Tilting a bottle of clear liquid over the cup", ["vinegar bottle", "clear cup"], _VINEGAR_EARLY),
+    ("Pouring clear liquid from a bottle into the cup", ["vinegar bottle", "clear cup"], _VINEGAR_EARLY),
+    ("Squeezing drops of blue liquid into the cup", ["blue food coloring bottle", "clear cup"], {"step": 3, "kind": "done"}),
+    ("Stirring the blue water with a spoon", ["spoon", "clear cup", "blue liquid"], {"step": 3, "kind": "done"}),
+    ("Scooping white powder with a measuring spoon", ["measuring spoon", "white powder"], {"step": 4, "kind": "progress"}),
+    ("Adding white powder to the blue water and stirring", ["measuring spoon", "clear cup"], {"step": 4, "kind": "done"}),
+    ("Stirring until the white powder dissolves", ["spoon", "clear cup"], {"step": 4, "kind": "done"}),
+    ("Slowly pouring vinegar from a measuring spoon into the cup", ["measuring spoon", "clear cup"], {"step": 5, "kind": "done"}),
+    ("Blue foam bubbling up inside the cup", ["clear cup", "blue foam"], {"step": 5, "kind": "done"}),
+    ("Pouring the cup's contents into the sink", ["clear cup", "sink"], {"step": 6, "kind": "done"}),
+    ("Rinsing the empty cup under the tap", ["clear cup", "tap"], {"step": 6, "kind": "done"}),
 ]
 
 
@@ -85,8 +96,9 @@ def pick(objs):
 
 
 def mock_line(tick):
-    action, objects = MOCK_SCRIPT[tick % len(MOCK_SCRIPT)]
-    return normalize({"action": action, "objects": objects})
+    """(line, tag) for a scripted tick."""
+    action, objects, tag = MOCK_SCRIPT[tick % len(MOCK_SCRIPT)]
+    return normalize({"action": action, "objects": objects}), tag
 
 
 def describe(frames):

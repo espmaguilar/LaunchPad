@@ -53,11 +53,50 @@ export interface ScribeLine {
   last_time?: string;
   last_elapsed?: number;
 }
+export interface StepState {
+  number: number;
+  status: "done" | "current" | "upcoming";
+  started_elapsed: number | null;
+  done_at: string | null;
+  done_elapsed: number | null;
+  evidence: string;
+  method: "auto" | "manual" | null;
+  snapshot_id: string | null;
+}
+export interface FeedbackItem {
+  id: string;
+  kind: "mistake" | "possible_skip";
+  step: number;
+  time: string;
+  elapsed: number;
+  mistake_type: string;
+  what_went_wrong: string;
+  how_to_fix: string;
+  evidence: string;
+  snapshot_id: string | null;
+  dismissed: boolean;
+  corrected: boolean | null;
+}
+export interface MatchCheck {
+  status: string;
+  confidence: number;
+  evidence: string;
+  mistake: boolean;
+  step: number;
+  time: string;
+}
+export interface SessionEvent {
+  type: "step_done" | "complete" | "mistake" | "possible_skip" | "undo";
+  voice: string;
+  step?: number;
+  feedback_id?: string;
+}
 export interface ScribeResult {
   line?: ScribeLine;
   new_line?: boolean;
   skipped?: boolean;
   error?: string;
+  state?: LabSession;
 }
 export interface LabSession {
   session_id: string;
@@ -72,6 +111,15 @@ export interface LabSession {
   skipped: number;
   errors: number;
   last_error: string | null;
+  current: number;
+  steps_state: StepState[];
+  feedback: FeedbackItem[];
+  last_check: (MatchCheck & { confirmed?: boolean }) | null;
+  completed_at: string | null;
+  complete: boolean;
+  active: boolean;
+  streaks: { done: number; skip: number; mistake: number };
+  events?: SessionEvent[];
 }
 export interface Settings {
   workspace_name: string;

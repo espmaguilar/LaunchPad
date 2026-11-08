@@ -99,6 +99,11 @@ PPE_WORDS = {"goggle": "safety goggles", "glove": "gloves", "lab coat": "lab coa
 SAFETY_WORDS = ("safety", "goggle", "glove", "hot", "heat", "flame", "acid", "base", "splash", "sharp", "caution", "warning")
 
 
+def _is_heading(line):
+    """'QUESTIONS', 'Questions', 'Clean-up' - short, no sentence punctuation."""
+    return len(line) <= 30 and not re.search(r"[.,;:]$", line) and len(line.split()) <= 3 and line[0].isupper()
+
+
 def heuristic_extract(text):
     """'Step N: ...' / 'N. ...' lines -> steps. Used in MOCK_MODE or when Bedrock is unavailable.
     expected_action/visual_cues are left for the reviewer (no AI to infer them)."""
@@ -110,7 +115,9 @@ def heuristic_extract(text):
         if m:
             cur = {"instruction": m.group(2)}
             steps.append(cur)
-        elif cur is not None and l and not re.match(r"^[A-Z][A-Z ]{3,}$", l) and len(cur["instruction"]) < 250:
+        elif cur is not None and l and _is_heading(l):
+            cur = None  # a section heading ("Questions") ends the step list
+        elif cur is not None and l and len(cur["instruction"]) < 250:
             cur["instruction"] += " " + l  # wrapped line
         elif not l:
             cur = None
