@@ -5,13 +5,14 @@ import threading
 import types
 
 import config
+config.SAVE_SESSIONS = False  # don't write test sessions to session_logs/
 import scribe
 import sessions
 import vision
 
 # 1. normalize: trims, capitalizes, ends with a period, dedupes objects, caps length
 n = scribe.normalize({"action": '  pouring water into a clear cup ', "objects": ["Clear Cup", "clear cup", "water", ""]})
-assert n == {"action": "Pouring water into a clear cup.", "objects": ["clear cup", "water"], "focus": None}, n
+assert n == {"action": "Pouring water into a clear cup.", "objects": ["clear cup", "water"], "focus": None, "boxes": []}, n
 assert scribe.normalize({"action": "x", "focus": [0.9, 0.1, 0.5, 0.2]})["focus"] == [0.9, 0.1, 0.1, 0.2]   # clamped
 assert scribe.normalize({"action": "x", "focus": [62, 40, 25, 30]})["focus"] == [0.62, 0.4, 0.25, 0.3]     # percentages
 assert scribe.normalize({"action": "x", "focus": "center"})["focus"] is None
@@ -136,5 +137,16 @@ ss_raw = sessions.start(proc)
 assert sessions.public(ss_raw)["focus_terms"]["objects"] == ["bottle cap"]
 ss_raw["breakdown"] = {"step": 1, "current": 0, "since": 0, "items": [{"instruction": "Pick up the water bottle", "expected_action": "x", "done": False}]}
 assert sessions._focus_terms(ss_raw) == {"action": "pick up", "objects": ["water bottle", "bottle cap"]}
+
+# named boxes for the grid: cleaned, clamped, deduped, max 4; junk dropped
+n = scribe.normalize({"action": "Holding a silver water bottle", "objects": ["silver water bottle"],
+                      "boxes": [{"name": " Silver Water  Bottle ", "box": [40, 20, 12, 45]},          # percentages
+                                {"name": "silver water bottle", "box": [0.1, 0.1, 0.1, 0.1]},     # duplicate
+                                {"name": "cup", "box": "nope"}, "junk", {"box": [0, 0, 1, 1]}]})
+assert n["boxes"] == [{"name": "silver water bottle", "box": [0.4, 0.2, 0.12, 0.45]}], n["boxes"]
+assert scribe.normalize({"action": "x"})["boxes"] == []
+mock = [scribe.mock_line(i)[0] for i in range(len(scribe.MOCK_SCRIPT))]
+with_focus = [l for l in mock if l["focus"] and l["objects"]]
+assert with_focus and all(l["boxes"][0]["name"] == l["objects"][0] for l in with_focus)
 
 print("all scribe checks passed")

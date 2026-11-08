@@ -53,6 +53,7 @@ export interface ScribeLine {
   ms: number;
   repeat: number;
   focus?: [number, number, number, number] | null;
+  boxes?: { name: string; box: [number, number, number, number] }[]; // scribe's named objects, for the grid labels
   frame_id?: string | null;
   last_time?: string;
   last_elapsed?: number;

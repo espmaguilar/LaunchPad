@@ -43,6 +43,9 @@ uvicorn main:app --reload --reload-include .env
 # open http://localhost:8000
 ```
 
+**Demo: run `uvicorn main:app` without `--reload`** (sessions are in memory, so a reload triggered by a file change
+wipes the session in progress).
+
 The built UI is committed, so Node is only needed to change it:
 `cd frontend && npm install && npm run build` (or `npm run dev` for hot reload on :5173).
 

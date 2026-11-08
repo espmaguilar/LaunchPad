@@ -251,3 +251,5 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .substeps-panel header .ss-exit:hover { background: var(--teal-light, #e6f6f5); }
 
 .hands-chip .hc-watch { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 8px; border-radius: 999px; background: rgba(45, 212, 191, .22); color: #ccfbf1; font-weight: 600; }
+
+.camera-label.paused i { background: #fbbf24 !important; box-shadow: 0 0 0 4px rgba(251, 191, 36, .25) !important; animation: none !important; }

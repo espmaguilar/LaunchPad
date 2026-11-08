@@ -40,7 +40,9 @@ export interface HandFeatures {
   moving: boolean;
 }
 export interface SceneObject {
-  label: string;
+  label: string;           // the browser detector's class (COCO) - internal only: NOT shown, NOT sent to the scribe
+  name: string | null;     // what the SCRIBE called it (Llama vision) - the one name shown everywhere; null = unnamed
+  fromScribe: boolean;     // box comes only from the scribe (detector didn't find it), position up to ~3 s old
   score: number;
   box: { x: number; y: number; w: number; h: number }; // 0-1 of the video frame
   heldBy: "left" | "right" | null;
@@ -51,25 +53,34 @@ export interface SceneObject {
   relations: string[];     // e.g. "above the cup", "left of the bowl"
   focus: boolean;          // matches the current instruction's key objects
 }
-interface Track { id: number; label: string; score: number; box: SceneObject["box"]; lastSeen: number; hits: number; hist: { t: number; cx: number; cy: number }[] }
+interface Track { id: number; label: string; name: string | null; score: number; box: SceneObject["box"]; lastSeen: number; hits: number; hist: { t: number; cx: number; cy: number }[] }
 let tracks: Track[] = [];
 let lastHands: HandsState["hands"] = [];
 
 // ---- focus on the instruction's key words (e.g. "Twist the bottle cap open" -> bottle cap) ----
 let focusWords: string[] = [];
-// detector labels (COCO) -> words lab instructions use for the same thing
-const LABEL_SYNONYMS: Record<string, string[]> = {
-  bottle: ["bottle", "cap", "lid", "flask", "dropper", "reagent", "squeeze"],
-  cup: ["cup", "beaker", "glass", "mug", "container", "tube", "vial", "jar"],
-  "wine glass": ["glass", "beaker", "flask", "cup"],
-  bowl: ["bowl", "dish", "basin", "petri", "container", "tray"],
-  spoon: ["spoon", "stirrer", "stir", "spatula", "scoop", "rod"],
-  fork: ["fork"], knife: ["knife", "scalpel", "blade"], scissors: ["scissors"],
-  "cell phone": ["phone", "timer", "stopwatch"], book: ["book", "manual", "notebook", "paper"],
-  clock: ["clock", "timer"], remote: ["remote", "meter", "multimeter"], "sports ball": ["ball"],
-  "teddy bear": ["teddy", "bear", "toy"], banana: ["banana"], apple: ["apple"], orange: ["orange"],
-  vase: ["vase", "flask", "bottle"], toothbrush: ["brush", "toothbrush"], keyboard: ["keyboard"],
-};
+// ---- names come from the scribe (open vocabulary), positions from the browser detector ----
+// The detector only knows 80 COCO classes on a ~320 px image ("toothbrush" for a slim metal bottle), so its class is
+// never shown; each detector box takes the name of the scribe box it overlaps.
+const SCRIBE_BOX_MS = 6000;     // scribe names are matched to detector boxes for this long after a scribe line
+// Llama's own boxes are rough (tested on photos: sometimes offset, sometimes on empty background), so they are only a
+// hint. The strong signal: the object named in the action sentence ("Drinking from a water bottle") is the one a
+// hand is holding.
+let scribeBoxes: { name: string; box: SceneObject["box"]; at: number }[] = [];
+let actionObject: { name: string; at: number } | null = null;
+const wordsOf = (s: string) => s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 2);
+/** Latest scribe line: its named boxes ([x, y, w, h] fractions), action sentence and object names. */
+export function setScribeObjects(boxes: { name: string; box: [number, number, number, number] }[], action = "", objects: string[] = []) {
+  const at = performance.now(), act = new Set(wordsOf(action));
+  scribeBoxes = (boxes ?? []).map((b) => ({ name: b.name, box: { x: b.box[0], y: b.box[1], w: b.box[2], h: b.box[3] }, at }));
+  // the object the action is about: the scribe's object name that shares the most words with the sentence
+  let best: string | null = null, bestN = 0;
+  for (const n of [...objects, ...(boxes ?? []).map((b) => b.name)]) {
+    const k = wordsOf(n).filter((w) => act.has(w)).length;
+    if (k > bestN) { best = n; bestN = k; }
+  }
+  actionObject = best ? { name: best, at } : null;
+}
 const singular = (w: string) => w.replace(/(es|s)$/, "");
 /** Current step's key words (the session sends them as focus_terms). */
 export function setFocusTerms(action: string, objects: string[]) {
@@ -77,10 +88,9 @@ export function setFocusTerms(action: string, objects: string[]) {
   const watching = [action, objects.join(", ")].filter(Boolean).join(" · ");
   if (watching !== state.watching) emit({ watching });
 }
-function isFocus(label: string) {
-  if (!focusWords.length) return false;
-  const words = (LABEL_SYNONYMS[label] ?? label.split(" ")).map(singular);
-  return words.some((w) => focusWords.includes(w));
+function isFocus(name: string | null) {
+  if (!focusWords.length || !name) return false;
+  return name.toLowerCase().split(/[^a-z]+/).map(singular).some((w) => focusWords.includes(w));
 }
 let nextTrackId = 1;
 export interface HandsState {
@@ -197,7 +207,7 @@ const sideOfBox = (b: SceneObject["box"]) => {
 };
 export function describeObject(o: SceneObject) {
   const bits = [o.heldBy ? `held by ${o.heldBy} hand` : "", o.height, o.motion, ...o.relations, sideOfBox(o.box)].filter(Boolean);
-  return `${o.maybe ? "maybe " : ""}${o.label} (${bits.join(", ")})`;
+  return `${o.name ?? "an object"} (${bits.join(", ")})`;
 }
 
 const iou = (a: SceneObject["box"], b: SceneObject["box"]) => {
@@ -224,7 +234,7 @@ function updateTracks(dets: { label: string; score: number; box: SceneObject["bo
         w: best.box.w + (d.box.w - best.box.w) * k, h: best.box.h + (d.box.h - best.box.h) * k };
       best.score = d.score; best.lastSeen = now; best.hits++; used.add(best.id);
     } else {
-      const t: Track = { id: nextTrackId++, label: d.label, score: d.score, box: d.box, lastSeen: now, hits: 1, hist: [] };
+      const t: Track = { id: nextTrackId++, label: d.label, name: null, score: d.score, box: d.box, lastSeen: now, hits: 1, hist: [] };
       tracks.push(t); used.add(t.id);
     }
   }
@@ -236,10 +246,36 @@ function updateTracks(dets: { label: string; score: number; box: SceneObject["bo
   }
 }
 
+/** Give detector boxes the scribe's names. 1) the object named in the action sentence goes to the box a hand holds;
+ *  2) other boxes: best one-to-one overlap with the scribe's (rough) boxes. Names stick to a track afterwards. */
+function nameTracks(live: Track[], hands: HandsState["hands"], now: number) {
+  const usedT = new Set<number>(), usedN = new Set<string>();
+  if (actionObject && now - actionObject.at <= SCRIBE_BOX_MS) {
+    const held = live.filter((t) => holder(t.box, hands));
+    if (held.length === 1) {   // only when it's unambiguous which box is in hand
+      held[0].name = actionObject.name; usedT.add(held[0].id); usedN.add(actionObject.name);
+    }
+  }
+  const fresh = scribeBoxes.filter((b) => now - b.at <= SCRIBE_BOX_MS && !usedN.has(b.name));
+  const pairs: { t: Track; b: (typeof fresh)[number]; sc: number }[] = [];
+  for (const t of live) for (const b of fresh) {
+    if (usedT.has(t.id)) continue;
+    const a = centre(t.box), c = centre(b.box);
+    const sc = Math.max(iou(t.box, b.box), 0.15 - Math.hypot(a.cx - c.cx, a.cy - c.cy));
+    if (sc > 0.1) pairs.push({ t, b, sc });
+  }
+  for (const p of pairs.sort((x, y) => y.sc - x.sc)) {
+    if (usedT.has(p.t.id) || usedN.has(p.b.name)) continue;
+    p.t.name = p.b.name; usedT.add(p.t.id); usedN.add(p.b.name);
+  }
+}
+
 /** Where things are relative to the bench, the hands and each other. */
 function sceneObjects(hands: HandsState["hands"], now: number): SceneObject[] {
+  const live = tracks.filter((t) => t.hits >= OBJECT_CONFIRM_HITS);
+  nameTracks(live, hands, now);
   // "bench line": the lowest bottom edge of objects nobody holds (fallback: bottom 15% of the frame)
-  const base = tracks.filter((t) => t.hits >= OBJECT_CONFIRM_HITS).map((t) => ({ t, held: holder(t.box, hands) }))
+  const base = live.map((t) => ({ t, held: holder(t.box, hands) }))
     .filter(({ t, held }) => held || t.box.w * t.box.h >= OBJECT_MIN_AREA);
   const resting = base.filter((x) => !x.held).map((x) => x.t.box.y + x.t.box.h);
   const bench = resting.length ? Math.max(...resting) : 0.85;
@@ -254,8 +290,9 @@ function sceneObjects(hands: HandsState["hands"], now: number): SceneObject[] {
       // only real moves: held objects moving > 6% of the frame, unheld ones > 15% (box jitter is not motion)
       if (Math.hypot(dx, dy) > (held ? 0.06 : 0.15)) motion = Math.abs(dy) >= Math.abs(dx) ? (dy < 0 ? "moving up" : "moving down") : (dx < 0 ? "moving left" : "moving right");
     }
-    return { label: t.label, score: t.score, box: t.box, heldBy: held, maybe: t.score < OBJECT_SURE_SCORE, height, motion,
-      stale: now - t.lastSeen > OBJECT_EVERY_MS * 1.5, relations: [] as string[], focus: isFocus(t.label) };
+    return { label: t.label, name: t.name, fromScribe: t.id < 0, score: t.score, box: t.box, heldBy: held,
+      maybe: t.id >= 0 && t.score < OBJECT_SURE_SCORE, height, motion,
+      stale: t.id < 0 || now - t.lastSeen > OBJECT_EVERY_MS * 1.5, relations: [] as string[], focus: isFocus(t.name) };
   });
   // if anything matches the instruction, only those objects count (relations, summary); else keep everything
   const anyFocus = objs.some((o) => o.focus);
@@ -267,7 +304,7 @@ function sceneObjects(hands: HandsState["hands"], now: number): SceneObject[] {
       if (p === o || (anyFocus && !p.focus)) continue;
       const b = centre(p.box), dx = a.cx - b.cx, gapY = p.box.y - (o.box.y + o.box.h);
       const overlapX = Math.min(o.box.x + o.box.w, p.box.x + p.box.w) - Math.max(o.box.x, p.box.x);
-      const name = p.label === o.label ? `the other ${p.label}` : `the ${p.label}`;
+      const name = !p.name ? "another object" : p.name === o.name ? `the other ${p.name}` : `the ${p.name}`;
       if (overlapX > 0 && gapY > -0.05 && gapY < 0.35) rels.push({ d: Math.max(0, gapY), text: `above ${name}` });
       else if (overlapX > 0 && iou(o.box, p.box) > 0.15) rels.push({ d: 0.01, text: `touching ${name}` });
       else if (Math.abs(dx) < 0.3) rels.push({ d: Math.abs(dx), text: `${dx < 0 ? "left" : "right"} of ${name}` });
@@ -349,10 +386,10 @@ function loop() {
   const focusObjs = objects.filter((o) => o.focus);
   if (focusObjs.length) {
     parts.push(`key objects for this step: ${focusObjs.map(describeObject).join(", ")}`);
-    const other = [...new Set(objects.filter((o) => !o.focus).map((o) => o.label))];
+    const other = [...new Set(objects.filter((o) => !o.focus && o.name).map((o) => o.name as string))];
     if (other.length) parts.push(`ignored (not in the instruction): ${other.join(", ")}`);
   } else {
-    parts.push(objects.length ? `objects: ${objects.map(describeObject).join(", ")}` : "no known objects recognised");
+    parts.push(objects.length ? `objects: ${objects.map(describeObject).join(", ")}` : "no objects tracked");
   }
   emit({ hands, features: feats, objects, summary: parts.join("; ") });
 }

@@ -10,3 +10,4 @@ mock_data/
 audio_cache/
 settings.json
 frontend/node_modules/
+session_logs/

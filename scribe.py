@@ -16,6 +16,11 @@ import vision
 SYSTEM_PROMPT = """You are a lab scribe. You get 2 consecutive frames (about 1 second apart) from a camera \
 pointed at a lab bench. Describe ONLY the physical action happening and the objects involved.
 
+FIRST look at frame 2 on its own: what is the student doing or holding right now? That is your answer. Then use
+frame 1 only to add motion (pouring, lifting, turning). If the two frames look the same, the student is holding
+still - say what they hold ("Holding a silver water bottle with the cap off."). Never answer "No visible action"
+while an object is in the student's hands.
+
 Focus on the STUDENT'S WORK AREA: the person closest to the camera, their hands, the bench in front of them and
 anything they hold. Scan that whole area, including its edges (actions often happen off-center), but treat
 everything behind it as background.
@@ -24,9 +29,12 @@ Rules:
 - One short sentence, present tense, at most 15 words, e.g. "Pouring water from a bottle into a clear cup."
 - Describe what the hands/person physically do. No intent, no guesses about why, no step numbers.
 - Name objects by what they look like ("clear cup", "small white bottle", "blue liquid", "spoon").
-- Compare the two frames: if the student moves something or something on their bench changes (pouring, stirring,
-  a color appearing), say so. Camera shake, lighting changes and small shifts are NOT actions.
-- If nothing is happening, action = "No visible action" and still list visible lab objects.
+- Compare the two frames ONLY to add motion: if the student moves something or something on their bench changes (pouring, stirring,
+  a color appearing), say so. Camera shake and lighting changes are NOT actions.
+- HOLDING COUNTS: if the student holds, shows or wears an object, describe it even when nothing moves, e.g.
+  "Holding a stuffed dog up to the camera.", "Wearing headphones.", "Holding a silver bottle with the cap off."
+- "No visible action" ONLY when the student's hands are empty or idle and nothing on the bench changes. Still list
+  visible lab objects.
 - IGNORE THE BACKGROUND: people walking or moving behind the student, other benches, screens, doors, windows.
   Background movement is never the action. If only the background moves, action = "No visible action".
 - You may also get a "Scene tracking" summary from on-device models watching the last 3 seconds: hand motion
@@ -38,12 +46,17 @@ Rules:
   with bottle cap). Look for THOSE objects first and describe what the student does with them - including when the
   action is NOT happening ("Holding a bottle, cap still on."). Leave out unrelated things (clothes, toys, furniture,
   decorations) unless the student is using them. Never claim the action happens unless you can see it.
+- boxes: for up to 4 objects the student is using or that sit on their bench (NOT clothes, hair, furniture or
+  background), where each one is in the frame as [x, y, width, height] fractions from the top-left corner, named
+  with the same words you used in objects (e.g. {"name": "silver water bottle", "box": [0.40, 0.20, 0.12, 0.45]}).
+  [] if there are none.
 - focus: where in the frame the action (or the most relevant lab object) is, as [x, y, width, height] fractions of
   the frame from the top-left corner, e.g. [0.62, 0.40, 0.25, 0.30]. null if there is nothing to point at.
 
 Return ONLY ONE JSON object for BOTH frames together (describe the change between them), no prose,
 no markdown, not one object per frame:
-{"action": "<sentence>", "objects": ["<object>", ...], "focus": [x, y, w, h] or null}"""
+{"action": "<sentence>", "objects": ["<object>", ...], "focus": [x, y, w, h] or null,
+ "boxes": [{"name": "<object, same words as in objects>", "box": [x, y, w, h]}, ...]}"""
 
 # Mock transcript for the demo manual (Color-Change Reaction), one line per scribe tick; loops.
 # (action, objects, tag). tag tells the mock matcher which demo step the line belongs to.
@@ -95,7 +108,16 @@ def normalize(data):
         o = str(o).strip().lower()[:40]
         if o and o not in objects:
             objects.append(o)
-    return {"action": action[0].upper() + action[1:], "objects": objects[:8], "focus": _focus(data.get("focus"))}
+    boxes = []
+    for b in data.get("boxes") or []:
+        if not isinstance(b, dict):
+            continue
+        name = re.sub(r"\s+", " ", str(b.get("name") or "")).strip().lower()[:40]
+        box = _focus(b.get("box"))
+        if name and box and all(x["name"] != name for x in boxes):
+            boxes.append({"name": name, "box": box})
+    return {"action": action[0].upper() + action[1:], "objects": objects[:8], "focus": _focus(data.get("focus")),
+            "boxes": boxes[:4]}
 
 
 def _focus(v):
@@ -110,6 +132,9 @@ def _focus(v):
         return None
     if max(x, y, w, h) > 1.5:  # percentages
         x, y, w, h = x / 100, y / 100, w / 100, h / 100
+    # Llama sometimes sends two corners [x1, y1, x2, y2] instead of [x, y, w, h]: as a size it would run off the frame
+    if (x + w > 1.05 or y + h > 1.05) and w > x and h > y and w <= 1.0 and h <= 1.0:
+        w, h = w - x, h - y
     x, y = min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
     w, h = min(max(w, 0.02), 1.0 - x), min(max(h, 0.02), 1.0 - y)
     if w <= 0 or h <= 0:
@@ -141,7 +166,9 @@ def mock_line(tick):
     """(line, tag) for a scripted tick."""
     i = tick % len(MOCK_SCRIPT)
     action, objects, tag = MOCK_SCRIPT[i]
-    return normalize({"action": action, "objects": objects, "focus": MOCK_FOCUS[i % len(MOCK_FOCUS)]}), tag
+    focus = MOCK_FOCUS[i % len(MOCK_FOCUS)]
+    boxes = [{"name": objects[0], "box": focus}] if focus and objects else []
+    return normalize({"action": action, "objects": objects, "focus": focus, "boxes": boxes}), tag
 
 
 _STOP = set("""a an the this that these those it its your you of to in into onto on from with without for and or
@@ -197,7 +224,7 @@ def describe(frames, motion="", terms=None):
         + (f"\nWatch for: action '{terms['action']}' with {', '.join(terms['objects']) or 'the materials'}."
            if terms and (terms.get("action") or terms.get("objects")) else "")
         + (f"\nScene tracking (last 3 s): {motion}" if motion else ""),
-        max_tokens=200,
+        max_tokens=320,   # room for boxes
     )
     line = pick(vision.parse_all(text))
     if line is None:

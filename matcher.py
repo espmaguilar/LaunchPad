@@ -48,7 +48,9 @@ mistake=false.
 - expected_seen: true if the transcript shows what the CURRENT step's "DONE WHEN the camera sees" describes
   (judge just that one visual condition, nothing else), else false.
 - evidence: the transcript words that justify the status (short quote), or "".
-- confidence: 0.0-1.0, calibrated (0.5 = unsure).
+- confidence: 0.0-1.0 = how sure you are that your STATUS is right (NOT how finished the step is). If the
+  transcript clearly shows the student working on the current step with its objects, in_progress deserves a high
+  confidence (0.8+) even though the step isn't finished. 0.5 = unsure.
 
 Return ONLY JSON, no prose, no markdown:
 {"status": "...", "expected_seen": false, "confidence": 0.0, "evidence": "...", "mistake": false,
@@ -246,7 +248,9 @@ def check(steps, current_idx, transcript_lines):
     if not objs:
         raise ValueError(f"no JSON in matcher reply: {text[:120]!r}")
     r = refine(normalize(objs[0]), steps, current_idx)
-    if not config.LENIENT_ADVANCE and r["status"] == "in_progress" and not r["mistake"] and transcript_lines:
+    # instant mode: the key-object rule already gates advancing, so skip this extra Bedrock call
+    if (not config.LENIENT_ADVANCE and config.ADVANCE_MODE != "instant" and r["status"] == "in_progress"
+            and not r["mistake"] and transcript_lines):
         seen, conf = confirm_done(steps[current_idx], transcript_lines)
         if seen and conf >= config.MATCH_MIN_CONFIDENCE:
             r = {**r, "status": "done", "confidence": round(conf, 2),

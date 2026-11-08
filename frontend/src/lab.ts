@@ -5,8 +5,8 @@
 // MOCK_MODE works without a camera (the server scripts the transcript).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, post, type Health, type LabSession, type ScribeLine, type ScribeResult, type SessionEvent } from "./api";
-import { motionSummary, setFocusTerms, startHands, stopHands } from "./hands";
-import { speak, unlockAudio } from "./voice";
+import { motionSummary, setFocusTerms, setScribeObjects, startHands, stopHands } from "./hands";
+import { isSpeaking, onSpeaking, speak, unlockAudio } from "./voice";
 
 export interface LabState {
   stream: MediaStream | null;
@@ -22,6 +22,7 @@ export interface LabState {
   chat: ChatMessage[];
   asking: boolean;
   confusedOffer: number | null; // step number the "Feeling confused?" pop-up is asking about
+  speaking: boolean;            // LabScribe is talking: detection is paused until it finishes
 }
 
 export interface ChatMessage {
@@ -47,8 +48,13 @@ export function useLab(health: Health | null) {
   const streamRef = useRef<MediaStream | null>(null);
   const [s, setS] = useState<LabState>({
     stream: null, session: null, lines: [], lastMs: null, model: null, skipped: 0, scribeError: null, error: null, starting: false,
-    coach: null, chat: [], asking: false, confusedOffer: null,
+    coach: null, chat: [], asking: false, confusedOffer: null, speaking: false,
   });
+  // pause detection while speaking; afterwards drop frames captured during speech so judging starts fresh
+  useEffect(() => onSpeaking((on) => {
+    if (!on) ring.current = [];
+    setS((x) => ({ ...x, speaking: on }));
+  }), []);
   const pushChat = useCallback((msgs: Omit<ChatMessage, "id">[]) => {
     if (!msgs.length) return;
     setS((x) => ({ ...x, chat: [...x.chat, ...msgs.map((m) => ({ ...m, id: ++chatId }))].slice(-60) }));
@@ -103,6 +109,7 @@ export function useLab(health: Health | null) {
     const sess = sessionRef.current;
     if (!sess || sess.ended_at) return;
     if (inFlight.current) { setS((x) => ({ ...x, skipped: x.skipped + 1 })); return; } // no backlog
+    if (isSpeaking()) return; // no detection while LabScribe is saying the instruction
     const frames = ring.current.slice();
     if (!frames.length && !mock) return; // camera not ready yet
     inFlight.current = true;
@@ -112,6 +119,7 @@ export function useLab(health: Health | null) {
       applyState(r.state);
       if (r.line) {
         const line = r.line;
+        setScribeObjects(line.boxes ?? [], line.action, line.objects ?? []); // the grid labels its boxes with the scribe's names
         setS((x) => ({
           ...x,
           lines: r.new_line ? [...x.lines, line].slice(-300) : [...x.lines.slice(0, -1), line],
@@ -202,11 +210,11 @@ export function useLab(health: Health | null) {
     }
   }, []);
 
-  const act = useCallback(async (path: string) => {
+  const act = useCallback(async (path: string, body?: unknown) => {
     const sess = sessionRef.current;
     if (!sess) return;
     try {
-      applyState(await post<LabSession>(`/api/sessions/${sess.session_id}/${path}`));
+      applyState(await post<LabSession>(`/api/sessions/${sess.session_id}/${path}`, body));
     } catch (e) {
       setS((x) => ({ ...x, error: (e as Error).message }));
     }
@@ -237,11 +245,16 @@ export function useLab(health: Health | null) {
       setS((x) => ({ ...x, error: `Couldn't break the step down: ${(e as Error).message}` }));
     }
   }, [applyState]);
-  const substepDone = useCallback(() => act("substeps/done"), [act]);
+  // manual clicks carry the step number on screen: if a camera tick advanced meanwhile, the server ignores them
+  const seenStep = () => {
+    const sess = sessionRef.current;
+    return { step: sess ? sess.procedure.steps[sess.current]?.number ?? 0 : 0 };
+  };
+  const substepDone = useCallback(() => act("substeps/done", seenStep()), [act]);
   const exitBreakdown = useCallback(() => act("substeps/exit"), [act]);
-  const markDone = useCallback(() => act("steps/done"), [act]);
-  const undo = useCallback(() => act("steps/undo"), [act]);
-  const restartStep = useCallback(() => act("steps/restart"), [act]);
+  const markDone = useCallback(() => act("steps/done", seenStep()), [act]);
+  const undo = useCallback(() => act("steps/undo", seenStep()), [act]);
+  const restartStep = useCallback(() => act("steps/restart", seenStep()), [act]);
   const dismiss = useCallback((id: string) => act(`feedback/${id}/dismiss`), [act]);
 
   const closeSession = useCallback(() => {

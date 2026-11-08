@@ -10,6 +10,27 @@ try {
 }
 
 export const isMuted = () => muted;
+
+// ---- speaking state: detection pauses while LabScribe is talking (user: "detection only works after speech") ----
+let speaking = false;
+let speakTimer = 0;
+const speechListeners = new Set<(on: boolean) => void>();
+export const isSpeaking = () => speaking;
+export function onSpeaking(fn: (on: boolean) => void) {
+  speechListeners.add(fn);
+  return () => { speechListeners.delete(fn); };
+}
+function setSpeaking(on: boolean, text = "") {
+  window.clearTimeout(speakTimer);
+  // safety net: never stay "speaking" forever if an audio event is lost (~ 70 ms per character + 4 s)
+  if (on) speakTimer = window.setTimeout(() => setSpeaking(false), 4000 + text.length * 70);
+  if (on === speaking) return;
+  speaking = on;
+  speechListeners.forEach((fn) => fn(on));
+}
+if (audio) {
+  audio.addEventListener("ended", () => setSpeaking(false));
+}
 export function setMuted(v: boolean) {
   muted = v;
   try {
@@ -20,6 +41,7 @@ export function setMuted(v: boolean) {
   if (v) {
     audio?.pause();
     window.speechSynthesis?.cancel();
+    setSpeaking(false);
   }
 }
 
@@ -58,9 +80,13 @@ export function unlockAudio() {
 }
 
 function speakFallback(text: string) {
-  if (!window.speechSynthesis) return;
+  if (!window.speechSynthesis) { setSpeaking(false); return; }
   window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  const u = new SpeechSynthesisUtterance(text);
+  u.onend = () => setSpeaking(false);
+  u.onerror = () => setSpeaking(false);
+  setSpeaking(true, text);
+  window.speechSynthesis.speak(u);
 }
 
 /** Speak a guidance phrase (Polly, cached; browser voice if Polly is unavailable). */
@@ -70,6 +96,7 @@ export function speak(text: string, force = false) {
   let fellBack = false;
   const fallback = () => { if (!fellBack) { fellBack = true; speakFallback(text); } };
   audio.onerror = fallback;
+  setSpeaking(true, text);   // from the moment we ask (includes loading the audio) until it ends
   audio.src = `/api/voice?text=${encodeURIComponent(text)}`;
   audio.play().catch(fallback);
 }

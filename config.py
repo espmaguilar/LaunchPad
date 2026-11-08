@@ -50,6 +50,13 @@ MATCH_MIN_CONFIDENCE = 0.7      # below this a mistake / skip check doesn't coun
 # as a transcript line since the step started names one of the step's KEY OBJECTS (so "lifting hands" can never tick
 # "put on headphones"). "careful" = 2 checks + vision finish check + MIN_STEP_SECONDS; "lenient"/"strict" = older modes.
 ADVANCE_MODE = _env("ADVANCE_MODE", "instant").lower()
+SAVE_SESSIONS = _env("SAVE_SESSIONS", "true").lower() == "true"
+# off-track buffer: the newest line must show ANOTHER step's action on 2 checks in a row, >= this many seconds apart
+OFF_TRACK_SECONDS = float(_env("OFF_TRACK_SECONDS", "6"))   # session_logs/ for replay tests
+# instant mode's floor for the matcher's number: the key-object line is the real gate. Llama reported "in_progress 0.4"
+# for "Holding up a stuffed animal" on "Place the stuffed animal..." (its number meant "not finished", not "unsure"),
+# which blocked correct matches for 30 s at 0.55.
+INSTANT_MIN_CONFIDENCE = float(_env("INSTANT_MIN_CONFIDENCE", "0.3"))
 # careful mode (was the default) (user: "things are being done in haste" - hands lifted high ticked "put on headphones").
 LENIENT_ADVANCE = _env("LENIENT_ADVANCE", "false").lower() == "true"
 DONE_MIN_CONFIDENCE = 0.5 if LENIENT_ADVANCE else 0.55   # matcher "done" this sure counts toward passing

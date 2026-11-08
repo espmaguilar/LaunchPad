@@ -269,32 +269,36 @@ def scribe_frames(sid: str, req: Frames):
         raise HTTPException(409, str(e))
 
 
+class StepClick(BaseModel):
+    step: int | None = None   # the step number the student saw (0 = all done); a stale click changes nothing
+
+
 @app.post("/api/sessions/{sid}/steps/done")
-def mark_step_done(sid: str):
+def mark_step_done(sid: str, req: StepClick | None = None):
     """Manual override: the current step is done."""
     _session_or_404(sid)
     try:
-        return sessions.mark_done(sid)
+        return sessions.mark_done(sid, step=req.step if req else None)
     except sessions.SessionError as e:
         raise HTTPException(409, str(e))
 
 
 @app.post("/api/sessions/{sid}/steps/restart")
-def restart_step(sid: str):
+def restart_step(sid: str, req: StepClick | None = None):
     """Start the current step over (earlier camera lines stop counting for it)."""
     _session_or_404(sid)
     try:
-        return sessions.restart_step(sid)
+        return sessions.restart_step(sid, step=req.step if req else None)
     except sessions.SessionError as e:
         raise HTTPException(409, str(e))
 
 
 @app.post("/api/sessions/{sid}/steps/undo")
-def undo_step(sid: str):
+def undo_step(sid: str, req: StepClick | None = None):
     """Manual override: re-open the last completed step."""
     _session_or_404(sid)
     try:
-        return sessions.undo(sid)
+        return sessions.undo(sid, step=req.step if req else None)
     except sessions.SessionError as e:
         raise HTTPException(409, str(e))
 
@@ -359,10 +363,10 @@ def substeps_exit(sid: str):
 
 
 @app.post("/api/sessions/{sid}/substeps/done")
-def substep_done(sid: str):
+def substep_done(sid: str, req: StepClick | None = None):
     _session_or_404(sid)
     try:
-        return sessions.mark_substep_done(sid)
+        return sessions.mark_substep_done(sid, step=req.step if req else None)
     except sessions.SessionError as e:
         raise HTTPException(409, str(e))
 

@@ -6,6 +6,8 @@ import sys
 import types
 
 import config
+import time
+config.SAVE_SESSIONS = False  # don't write test sessions to session_logs/
 import ingest
 import matcher
 import procedures
@@ -304,31 +306,119 @@ assert s["current"] == 2
 config.MOCK_MODE = True
 
 # 15. Instant mode (default): one resembling check + a line naming the key object -> next step right away
-config.ADVANCE_MODE, config.LENIENT_ADVANCE, config.DONE_MIN_CONFIDENCE = "instant", False, 0.55
+config.ADVANCE_MODE, config.LENIENT_ADVANCE, config.INSTANT_MIN_CONFIDENCE = "instant", False, 0.3
 specimen = {"procedure_id": "s", "title": "Specimen", "steps": [
     {"number": 1, "instruction": "Put on the headphones.", "visual_cues": ["headphones"], "expected_action": "headphones on head"},
     {"number": 2, "instruction": "Place the specimen (stuffed animal) in the center of the workspace, facing the camera.",
      "visual_cues": ["stuffed animal", "workspace"], "expected_action": "stuffed animal centered"},
     {"number": 3, "instruction": "Pick up the reagent bottle (water bottle) and unscrew the cap.", "visual_cues": ["water bottle", "cap"]}]}
-assert sessions._key_words(specimen["steps"][1]) == {"stuffed", "animal"}
+assert sessions._key_words(specimen["steps"][1]) == {"stuffed", "animal", "plush", "teddy", "toy"}
 assert "head" not in sessions._key_words({"instruction": "Put on hearing protection: place the headphones over both ears.", "visual_cues": ["headphones", "head"]})
 assert "phone" in sessions._key_words({"instruction": "Pick up the data recorder (iPhone) and take a photo.", "visual_cues": ["iPhone"]})
 s = sessions.start(specimen)
 s["transcript"] = [{"elapsed": 2.0, "action": "Lifting both hands up high.", "objects": [], "repeat": 1}]
 sessions.apply_check(s, check("in_progress", 0.8), s["t0"] + 3)
-assert s["current"] == 0 and "no line names" in s["checks"][-1]["confirm"]        # hands up != headphones
+assert s["current"] == 0 and "no line shows" in s["checks"][-1]["confirm"]        # hands up != headphones
 s["transcript"].append({"elapsed": 4.0, "action": "Adjusting headphones on head.", "objects": ["headphones"], "repeat": 1})
 sessions.apply_check(s, check("in_progress", 0.6), s["t0"] + 4.5)
 assert s["current"] == 1                                                          # one check, instantly
+# the real bug: a toy in the background listed in "objects" must not count - only the action sentence does
+s["transcript"].append({"elapsed": 5.0, "action": "No visible action.", "objects": ["red stuffed animal"], "repeat": 1})
+sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 5.5)
+assert s["current"] == 1
 s["transcript"].append({"elapsed": 6.0, "action": "Holding a stuffed animal with both hands.", "objects": [], "repeat": 1})
-sessions.apply_check(s, check("in_progress", 0.5), s["t0"] + 6.5)
-assert s["current"] == 1                                                          # below 55%: not yet
-sessions.apply_check(s, check("in_progress", 0.6), s["t0"] + 9)
+sessions.apply_check(s, check("in_progress", 0.2), s["t0"] + 6.5)
+assert s["current"] == 1                                                          # below the 0.3 floor: not yet
+sessions.apply_check(s, check("in_progress", 0.4), s["t0"] + 9)                   # the real case: Llama said 0.4
 assert s["current"] == 2
 s["transcript"].append({"elapsed": 10.0, "action": "Unscrewing cap from a clear water bottle.", "objects": [], "repeat": 1})
 sessions.apply_check(s, check("done", 0.9, mistake=True, mistake_type="wrong_order"), s["t0"] + 10.5)
 assert s["current"] == 2                                                          # never while a mistake is reported
 sessions.apply_check(s, check("done", 0.9), s["t0"] + 11)
 assert s["complete"] if "complete" in s else s["current"] == 3
+
+# 16. Off-track: doing ANOTHER step's action -> coach card + voice, after a buffer (2 checks, >= 6 s apart)
+config.OFF_TRACK_SECONDS = 6
+s = sessions.start(specimen)
+s["current"] = 2
+s["steps_state"][0]["status"] = s["steps_state"][1]["status"] = "done"
+s["steps_state"][2].update(status="current", started_elapsed=1.0)
+s["procedure"]["steps"].append({"number": 4, "instruction": "Tilt the open bottle above the specimen.", "visual_cues": ["bottle"]})
+s["steps_state"].append({"number": 4, "status": "upcoming", "started_elapsed": None, "done_at": None,
+                         "done_elapsed": None, "evidence": "", "method": None, "snapshot_id": None})
+def line(t, a):
+    s["transcript"].append({"elapsed": t, "action": a, "objects": [], "repeat": 1})
+line(2.0, "Tilting a silver bottle.")
+sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 3)
+assert not s["feedback"] and s["off_track"]["step"] == 3            # first sighting: buffer, no card yet
+line(4.0, "No visible action.")
+sessions.apply_check(s, check("not_started", 0.0), s["t0"] + 5)
+assert s["off_track"] is None                                       # stray line -> reset
+line(6.0, "Tilting a silver bottle over the table.")
+sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 7)
+line(9.0, "Tilting a silver bottle.")
+sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 10)
+assert not s["feedback"]                                            # 2 checks but only 3 s apart: still buffering
+line(13.0, "Tilting the silver bottle again.")
+sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 14)
+fb = s["feedback"][-1]
+assert fb["mistake_type"] == "wrong_order" and "step 4" in fb["what_went_wrong"] and fb["how_to_fix"].startswith("Step 3")
+ev = [e for e in s["events"] if e["type"] == "mistake"][-1]
+assert ev["voice"].startswith("Hold on — that looks like step 4") and ev["feedback_id"] == fb["id"]
+line(16.0, "Tilting the silver bottle.")
+sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 22)
+assert len(s["feedback"]) == 1                                      # once per step
+line(23.0, "Unscrewing the cap from a silver bottle.")
+sessions.apply_check(s, check("in_progress", 0.8), s["t0"] + 24)
+assert s["current"] == 3 and fb["corrected"] is True               # doing the right step completes it -> corrected
+
+# 17. Procedures from DynamoDB have Decimal numbers: after the "Feeling confused?" offer (step number used as a dict
+#     key) every request on the session returned 500. Sessions must hold plain ints.
+from decimal import Decimal
+import json as _json
+dproc = {"procedure_id": "d", "title": "D", "steps": [{"number": Decimal("1"), "instruction": "Put on the headphones.",
+         "visual_cues": ["headphones"], "camera_checkable": True}, {"number": Decimal("2"), "instruction": "Hold the toy."}]}
+s = sessions.start(dproc)
+assert type(s["procedure"]["steps"][0]["number"]) is int
+s["step_since"] -= 60
+s["transcript"] = [{"elapsed": 1.0, "action": "No visible action.", "objects": [], "repeat": 1}]
+sessions._maybe_offer_help(s, time.time())
+assert s["confused"] == {1: "offered"}
+_json.dumps(sessions.public(s))                                   # used to raise TypeError -> HTTP 500
+
+# 18. Stale manual clicks: a camera tick advances step 2 -> 3; a "Mark done" click sent while step 2 was on screen
+#     must NOT advance step 3 (same guard for undo / restart / sub-step done). No step number = old behaviour.
+config.ADVANCE_MODE, config.LENIENT_ADVANCE, config.INSTANT_MIN_CONFIDENCE = "instant", False, 0.3
+s = sessions.start(specimen)
+sid = s["session_id"]
+sessions.mark_done(sid, step=1)
+assert s["current"] == 1
+s["transcript"].append({"elapsed": 5.0, "action": "Holding a stuffed animal up to the camera.", "objects": [], "repeat": 1})
+sessions.apply_check(s, check("in_progress", 0.8), time.time())        # the tick: step 2 -> 3
+assert s["current"] == 2
+st = sessions.mark_done(sid, step=2)                                   # stale click (student still saw step 2)
+assert s["current"] == 2 and st["current"] == 2 and s["steps_state"][2]["status"] == "current"
+sessions.undo(sid, step=2); assert s["current"] == 2                  # stale undo: nothing
+sessions.restart_step(sid, step=2); assert s["steps_state"][2]["started_elapsed"] is not None and s["current"] == 2
+sessions.mark_done(sid, step=3); assert s["current"] == 3             # a fresh click works (3 steps: all done now)
+sessions.undo(sid, step=3); assert s["current"] == 3                  # stale: the screen says "all done" (0), not 3
+sessions.undo(sid, step=0); assert s["current"] == 2                  # undo from "all done" back to step 3
+sessions.mark_done(sid); assert s["current"] == 3                     # no step sent: still works (old clients)
+# instant mode never makes the extra confirm_done call
+calls_before = []
+_orig = matcher.confirm_done
+matcher.confirm_done = lambda *a, **k: calls_before.append(1) or (True, 1.0)
+class _B:
+    def converse(self, **kw):
+        return {"output": {"message": {"content": [{"text": '{"status": "in_progress", "confidence": 0.8, "evidence": "x", "mistake": false}'}]}}}
+import aws_clients
+_orig_b, aws_clients.bedrock = aws_clients.bedrock, _B()
+matcher.check(specimen["steps"], 0, [{"elapsed": 1.0, "action": "Adjusting headphones.", "objects": []}])
+assert calls_before == []
+config.ADVANCE_MODE = "careful"
+matcher.check(specimen["steps"], 0, [{"elapsed": 1.0, "action": "Adjusting headphones.", "objects": []}])
+assert calls_before == [1]
+config.ADVANCE_MODE = "instant"
+matcher.confirm_done, aws_clients.bedrock = _orig, _orig_b
 
 print("all matcher checks passed")

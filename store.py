@@ -2,6 +2,7 @@
 files in mock_data/ with the same record shapes, so the flow is testable offline."""
 import json
 import threading
+from decimal import Decimal
 from pathlib import Path
 
 import config
@@ -60,11 +61,23 @@ def save_procedure(proc):
     _wrap(lambda: _table().put_item(Item=proc))
 
 
+def plain(obj):
+    """DynamoDB returns numbers as Decimal. Convert them (recursively) to int/float so the rest of the app sees plain
+    JSON types - a Decimal step number used as a dict key (s["confused"]) made every session request a 500."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
+    if isinstance(obj, dict):
+        return {plain(k): plain(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [plain(v) for v in obj]
+    return obj
+
+
 def get_procedure(procedure_id):
     if config.MOCK_MODE:
         with _lock:
             return next((p for p in _mock_load("procedures") if p["procedure_id"] == procedure_id), None)
-    return _wrap(lambda: _table().get_item(Key={"procedure_id": procedure_id}).get("Item"))
+    return plain(_wrap(lambda: _table().get_item(Key={"procedure_id": procedure_id}).get("Item")))
 
 
 def list_procedures():

@@ -15,6 +15,7 @@ Per scribe tick (under the session's lock):
 No backlog: the lock is acquired without waiting; if the previous tick is still running the new
 frames are skipped. Sessions live in memory (Phase C); Phase D/E persist them.
 """
+import json
 import re
 import secrets
 import threading
@@ -24,11 +25,14 @@ import config
 import breakdown
 import matcher
 import scribe
+import store
 from ingest import utc_timestamp
+from pathlib import Path
 
 _sessions = {}
 _lock = threading.Lock()
 MAX_LINES = 500
+LOG_DIR = Path(__file__).parent / "session_logs"   # gitignored: one folder per session, for replay tests
 MAX_SNAPSHOTS = 80      # pinned evidence frames per session
 MAX_LINE_FRAMES = 40    # rolling recent frames (one per transcript line)
 
@@ -38,6 +42,7 @@ class SessionError(Exception):
 
 
 def start(procedure):
+    procedure = store.plain(procedure)   # DynamoDB Decimals -> int/float (Decimal dict keys broke every request)
     sid = secrets.token_hex(6)
     steps = procedure["steps"]
     now = time.time()
@@ -63,6 +68,7 @@ def start(procedure):
         "done_streak": 0,
         "skip_streak": 0,
         "mistake_streak": {"type": None, "count": 0},
+        "off_track": None,      # {"step": n, "since": elapsed} - newest line shows ANOTHER step's action
         "flagged": [],          # [(step_number, kind)] already reported (no repeats)
         "feedback": [],         # mistakes + possible skips shown in the Feedback panel
         "last_check": None,     # latest matcher result (for the current-step card)
@@ -77,6 +83,7 @@ def start(procedure):
         "last_frame": None,
         "last_frame_id": None,
         "last_activity": now,   # last scribe tick / manual action (abandoned tabs stop ticking)
+        "_saved_at": 0.0,       # created up front: adding keys later races with requests copying the session
         "busy": threading.Lock(),
     }
     if steps and _is_paper(steps[0]):
@@ -94,13 +101,56 @@ def get(sid):
 
 
 ACTIVE_SECONDS = 30  # a session with no tick for this long is shown as idle (tab closed/reloaded)
-HIDDEN = ("busy", "t0", "last_activity", "step_since", "frames", "last_frame_id", "transcript", "snapshots", "last_frame", "events", "flagged",
+HIDDEN = ("_saved_at", "busy", "t0", "last_activity", "step_since", "frames", "last_frame_id", "transcript", "snapshots", "last_frame", "events", "flagged",
           "done_streak", "skip_streak", "mistake_streak")
 
 
+def _save(s, force=False):
+    """Write the session (procedure, transcript, checks, steps, feedback) to session_logs/{id}/session.json so real
+    runs survive server restarts and can be replayed as tests (test_replay.py). At most every 2 s unless forced."""
+    now = time.time()
+    if not config.SAVE_SESSIONS or (not force and now - s.get("_saved_at", 0) < 2):
+        return
+    s["_saved_at"] = now
+    try:
+        d = LOG_DIR / s["session_id"]
+        d.mkdir(parents=True, exist_ok=True)
+        keep = ("session_id", "started_at", "ended_at", "procedure", "current", "steps_state", "feedback", "checks",
+                "transcript", "confused", "breakdown")
+        data = {k: s.get(k) for k in keep}
+        data["config"] = {"advance_mode": config.ADVANCE_MODE, "model": config.BEDROCK_MODEL_ID}
+        (d / "session.json").write_text(json.dumps(data, indent=1, default=str))
+    except Exception as e:  # disk errors OR the camera thread changing the session mid-write: skip, retry next time
+        s["_saved_at"] = 0
+        print(f"[sessions] could not save {s['session_id']}: {e}")
+
+
+def _save_frame(s, frame_id, frame):
+    if not config.SAVE_SESSIONS:
+        return
+    try:
+        d = LOG_DIR / s["session_id"] / "frames"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{frame_id}.jpg").write_bytes(frame)
+    except OSError:
+        pass
+
+
 def public(s, since=0, events=None):
-    """JSON-safe view. since = transcript lines the client already has."""
-    out = {k: v for k, v in s.items() if k not in HIDDEN}
+    """JSON-safe view. since = transcript lines the client already has.
+    The scribe thread can change the session while a request copies it ("dictionary changed size during
+    iteration" -> 500), so the view is copied into plain JSON with a few quick retries."""
+    _save(s, force=bool(s.get("ended_at")))
+    for attempt in range(5):
+        try:
+            return json.loads(json.dumps(_public_view(s, since, events), default=str))
+        except RuntimeError:
+            time.sleep(0.005 * (attempt + 1))
+    return json.loads(json.dumps(_public_view(s, since, events), default=str))
+
+
+def _public_view(s, since, events):
+    out = {k: v for k, v in list(s.items()) if k not in HIDDEN}
     out["focus_terms"] = _focus_terms(s)
     out.update(
         transcript=s["transcript"][since:] if since <= len(s["transcript"]) else s["transcript"],
@@ -123,7 +173,9 @@ def _append(s, line, now, frame_id=None):
         if not t[-1].get("frame_id"):
             t[-1]["frame_id"] = frame_id
         t[-1].update(repeat=t[-1]["repeat"] + 1, last_time=entry["time"], last_elapsed=entry["elapsed"],
-                     objects=line["objects"] or t[-1]["objects"])
+                     objects=line["objects"] or t[-1]["objects"],
+                     # positions change even when the sentence repeats: keep the newest boxes for the grid labels
+                     focus=line.get("focus") or t[-1].get("focus"), boxes=line.get("boxes") or t[-1].get("boxes") or [])
         return t[-1], False
     t.append(entry)
     if len(t) > MAX_LINES:
@@ -138,7 +190,7 @@ def _window(s, now):
     since = max(now - s["t0"] - config.MATCH_WINDOW_SECONDS, st["started_elapsed"] or 0)
     first = st["started_elapsed"] or 0
     return [l for l in s["transcript"]
-            if l.get("last_elapsed", l["elapsed"]) > since and (l["elapsed"] > first or l.get("last_elapsed", 0) > first)]
+            if (l.get("last_elapsed") or l["elapsed"]) > since and (l["elapsed"] > first or (l.get("last_elapsed") or 0) > first)]
 
 
 def _store_frame(s, frame):
@@ -200,6 +252,7 @@ def _advance(s, now, evidence, method):
               evidence=evidence, method=method, snapshot_id=_snapshot(s, evidence, window))
     s["current"] = i + 1
     s["step_since"], s["coach_tip"], s["breakdown"] = now, None, None
+    s["off_track"] = None
     s["done_streak"] = s["skip_streak"] = 0
     s["mistake_streak"] = {"type": None, "count": 0}
     if s["current"] < len(steps):
@@ -251,12 +304,14 @@ def apply_check(s, r, now):
     # moving on
     if config.ADVANCE_MODE == "instant" and not config.LENIENT_ADVANCE:
         qualifies = (not r["mistake"] and r["status"] in ("done", "in_progress", "next_step_detected")
-                     and r["confidence"] >= config.DONE_MIN_CONFIDENCE)
+                     and r["confidence"] >= config.INSTANT_MIN_CONFIDENCE)
         hit = _key_object_line(steps[s["current"]], _window(s, now)) if qualifies else None
         s["checks"][-1]["confirm"] = (f"key object seen: {hit}" if hit else
-                                      "no line names the step's key object" if qualifies else None)
+                                      "no line shows the step's action on its key object" if qualifies else None)
         if hit:
             _complete_step(s, step_no, now, {**r, "evidence": r["evidence"] or hit})
+        else:
+            _check_off_track(s, now)
         return
     if config.LENIENT_ADVANCE:
         # Anything resembling the step (or already doing the next one) counts - but never while a
@@ -314,7 +369,7 @@ _GENERIC = {"table", "bench", "workspace", "camera", "hand", "hands", "area", "s
             "student", "front", "side", "top", "bottom", "lab", "space", "view", "work", "thing", "item", "materials",
             # body parts: "raising hands to head" must never count as "headphones on"
             "head", "ear", "ears", "face", "arm", "arms", "finger", "fingers", "eye", "eyes", "body", "back", "both"}
-_ALIASES = {"iphone": {"phone", "smartphone", "cellphone"}, "smartphone": {"phone"}, "specimen": {"stuffed", "animal", "toy"},
+_ALIASES = {"stuffed": {"plush", "teddy", "toy"}, "iphone": {"phone", "smartphone", "cellphone"}, "smartphone": {"phone"}, "specimen": {"stuffed", "animal", "toy"},
             "reagent": {"bottle"}, "beaker": {"cup", "glass"}, "headphone": {"headset", "earphone"}}
 
 
@@ -328,15 +383,123 @@ def _key_words(step):
     return words.union(*(_ALIASES.get(w, set()) for w in words))
 
 
+# Action groups: word stems that count as doing that kind of action ("unscrewing" starts with "unscrew").
+# A step requires its most specific group(s); generic handling (place/hold/pick up) only when it has nothing else.
+_ACTION_GROUPS = {
+    "wear": ("put on", "putting on", "wear", "don", "adjust", "headphones on", "on head", "over ears", "over both ears"),
+    "remove": ("remov", "take off", "taking off", "took off", "lift off", "lifting off", "pull off", "pulling off"),
+    "open": ("unscrew", "twist", "open", "uncap", "loosen", "cap off", "removing the cap", "removing cap"),
+    "close": ("screw", "screwing", "close", "tighten", "recap", "cap back", "cap on", "putting the cap", "putting cap"),
+    "tilt": ("tilt", "tip", "angl", "inclin", "dispens", "pour"),
+    "turn": ("turn", "rotat", "spin", "flip", "facing away", "back to the camera", "back facing"),
+    "photo": ("photo", "picture", "photograph", "snap", "captur", "point", "aim", "camera at"),
+    "pour": ("pour", "empty", "transfer", "dispens"),
+    "stir": ("stir", "mix", "swirl"),
+    "add": ("add", "drop", "squeez", "pour", "dispens"),
+    "shake": ("shak",),
+    "measure": ("measur", "ruler", "meter stick"),
+    "handle": ("plac", "put", "set", "position", "hold", "pick", "lift", "mov", "carr", "grab", "bring", "rais",
+               "lower", "show", "present", "center", "centr", "replac", "pass"),
+}
+# instruction words -> group (checked as phrases first, then single words)
+_STEP_PHRASES = {"put on": "wear", "take off": "remove", "screw the cap back": "close", "screw it back": "close",
+                 "screw the cap on": "close", "take a photo": "photo", "take a picture": "photo", "turn around": "turn"}
+_STEP_VERBS = {"wear": "wear", "remove": "remove", "unscrew": "open", "twist": "open", "open": "open", "uncap": "open",
+               "screw": "close", "close": "close", "tighten": "close", "tilt": "tilt", "tip": "tilt", "dispense": "tilt",
+               "dispensing": "tilt", "turn": "turn", "rotate": "turn", "flip": "turn", "photo": "photo",
+               "photograph": "photo", "pour": "pour", "stir": "stir", "mix": "stir", "swirl": "stir", "add": "add",
+               "shake": "shake", "measure": "measure", "place": "handle", "put": "handle", "set": "handle",
+               "pick": "handle", "hold": "handle", "lift": "handle", "move": "handle", "position": "handle"}
+
+
+def _step_groups(step):
+    """Action groups a line must show for this step. 'Pick up the bottle and unscrew the cap' -> {'open'};
+    'Place the specimen ...' -> {'handle'}; no known verb -> set() (object alone is enough)."""
+    text = " " + re.sub(r"[^a-z ]+", " ", str(step.get("instruction") or "").lower()) + " "
+    text = re.sub(r" (the|an|your|its) open ", r" \1 ", text)  # "the open bottle" describes, it isn't an action
+    groups = {g for ph, g in _STEP_PHRASES.items() if f" {ph} " in text}
+    if "close" in groups:
+        text = text.replace(" screw ", " ")  # "screw the cap back" is close, not open
+    groups |= {_STEP_VERBS[w] for w in text.split() if w in _STEP_VERBS}
+    if "close" in groups and "open" in groups and "unscrew" not in text and "open" not in text.split():
+        groups.discard("open")
+    specific = groups - {"handle"}
+    return specific or groups
+
+
+def _shows_action(groups, action_text):
+    if not groups:
+        return True
+    t = " " + re.sub(r"[^a-z ]+", " ", action_text.lower()) + " "
+    words = t.split()
+    for g in groups:
+        for stem in _ACTION_GROUPS[g]:
+            if " " in stem:
+                if f" {stem} " in t or f" {stem}" in t:
+                    return True
+            elif any(w.startswith(stem) for w in words):
+                if g == "close" and stem == "screw" and any(w.startswith("unscrew") for w in words) \
+                        and not any(w.startswith("screw") for w in words):
+                    continue
+                return True
+    return False
+
+
 def _key_object_line(step, lines):
-    """The newest transcript line that names one of the step's key objects (None if there is none)."""
-    keys = _key_words(step)
+    """The newest transcript line whose ACTION sentence names one of the step's key objects AND shows the step's
+    action (e.g. 'unscrew' for 'unscrew the cap'). Only the sentence counts - never the list of visible objects
+    (a toy sitting in the background must not pass 'turn the specimen around'). None if there is none."""
+    keys, groups = _key_words(step), _step_groups(step)
+    norm = lambda w: w[:-1] if w.endswith("s") and len(w) > 4 else w
     for l in reversed(lines):
-        words = {w[:-1] if w.endswith("s") and len(w) > 4 else w for w in re.findall(r"[a-z]+", l["action"].lower())}
-        words |= {w[:-1] if w.endswith("s") and len(w) > 4 else w for o in l.get("objects") or [] for w in re.findall(r"[a-z]+", o.lower())}
-        if keys & words:
+        words = {norm(w) for w in re.findall(r"[a-z]+", l["action"].lower())}
+        if keys & words and _shows_action(groups, l["action"]):
             return l["action"]
     return None
+
+
+def _check_off_track(s, now):
+    """The student is doing ANOTHER step's action instead of the current one -> coach card + voice, with a buffer:
+    the newest transcript line must match the same other step on 2 checks in a row, >= OFF_TRACK_SECONDS apart.
+    Uses the same action+object rule that advances steps, so 'tilting the bottle' on 'unscrew the cap' = step 4."""
+    steps, cur = s["procedure"]["steps"], s["current"]
+    win = _window(s, now)
+    latest = win[-1] if win else None
+    other = None
+    if latest and not latest["action"].lower().startswith("no visible action") \
+            and not _key_object_line(steps[cur], [latest]):
+        for j, st in enumerate(steps):
+            if j != cur and st.get("camera_checkable", True) and _key_object_line(st, [latest]):
+                other = j
+                if j > cur:   # a later step is the likelier mix-up; prefer the nearest later one
+                    break
+    if other is None:
+        s["off_track"] = None
+        return
+    elapsed = round(now - s["t0"], 1)
+    ot = s.get("off_track")
+    if not ot or ot["step"] != other:
+        s["off_track"] = {"step": other, "since": elapsed, "count": 1}
+        return
+    ot["count"] += 1
+    key = [steps[cur]["number"], f"off_track:{steps[other]['number']}"]
+    if ot["count"] < 2 or elapsed - ot["since"] < config.OFF_TRACK_SECONDS or key in s["flagged"]:
+        return
+    s["flagged"].append(key)
+    o, c = steps[other], steps[cur]
+    later = other > cur
+    action = latest["action"].rstrip(".")
+    fb = {"id": secrets.token_hex(4), "kind": "mistake", "step": c["number"], "time": utc_timestamp(now),
+          "elapsed": elapsed, "mistake_type": "wrong_order" if later else "incomplete",
+          "what_went_wrong": (f"You're {action[0].lower() + action[1:]} - that looks like step {o['number']}"
+                              f"{'' if later else ', which is already done'}."),
+          "how_to_fix": f"Step {c['number']} comes first: {c['instruction']}",
+          "evidence": latest["action"], "snapshot_id": _snapshot(s, latest["action"], win),
+          "dismissed": False, "corrected": None}
+    s["feedback"].append(fb)
+    voice = (f"Hold on — that looks like step {o['number']}. Let's finish step {c['number']} first: {c['instruction']}"
+             if later else f"Hold on — step {o['number']} is already done. Now: {c['instruction']}")
+    _say(s, "mistake", voice, feedback_id=fb["id"])
 
 
 def _can_confirm(s):
@@ -407,6 +570,8 @@ def scribe_frames(sid, frames, now=None, motion=""):
                 return {"error": s["last_error"], "state": public(s, len(s["transcript"]), _drain(s))}
         s["last_error"] = None
         entry, new = _append(s, line, now, frame_id)
+        if new and frames and frame_id is not None:
+            _save_frame(s, frame_id, frames[-1])   # the frame behind every transcript line, for replay tests
 
         cur_step = s["procedure"]["steps"][s["current"]] if s["current"] < len(s["procedure"]["steps"]) else None
         if cur_step is not None and _is_paper(cur_step):
@@ -520,10 +685,12 @@ def exit_breakdown(sid):
         return public(s, len(s["transcript"]), _drain(s))
 
 
-def mark_substep_done(sid, now=None):
+def mark_substep_done(sid, now=None, step=None):
     """Manual override for the current sub-step."""
     s = get(sid)
     with s["busy"]:
+        if _stale(s, step):
+            return public(s, len(s["transcript"]), _drain(s))
         if not s["breakdown"]:
             raise SessionError("no sub-steps right now")
         step = s["procedure"]["steps"][s["current"]]
@@ -537,19 +704,35 @@ def _drain(s):
 
 
 # ---------------- manual controls ----------------
-def mark_done(sid, now=None):
+def current_step_number(s):
+    """Number of the step on screen; 0 once every step is done."""
+    steps = s["procedure"]["steps"]
+    return steps[s["current"]]["number"] if s["current"] < len(steps) else 0
+
+
+def _stale(s, step):
+    """A manual click carries the step number the student saw. If a camera tick moved the session on in the
+    meantime, the click is stale: change nothing (must be called inside the session lock)."""
+    return step is not None and step != current_step_number(s)
+
+
+def mark_done(sid, now=None, step=None):
     s = get(sid)
     with s["busy"]:
+        if _stale(s, step):
+            return public(s, len(s["transcript"]), _drain(s))
         if s["current"] >= len(s["procedure"]["steps"]):
             raise SessionError("every step is already done")
         _advance(s, time.time() if now is None else now, "Marked done by the student", "manual")
         return public(s, len(s["transcript"]), _drain(s))
 
 
-def undo(sid, now=None):
+def undo(sid, now=None, step=None):
     """Re-open the most recent done step (it becomes current again)."""
     s = get(sid)
     with s["busy"]:
+        if _stale(s, step):
+            return public(s, len(s["transcript"]), _drain(s))
         if s["current"] == 0:
             raise SessionError("nothing to undo")
         now = time.time() if now is None else now
@@ -560,6 +743,7 @@ def undo(sid, now=None):
                                               method=None, snapshot_id=None, started_elapsed=round(now - s["t0"], 1))
         s["completed_at"] = None
         s["step_since"], s["coach_tip"], s["breakdown"] = now, None, None
+        s["off_track"] = None
         s["done_streak"] = s["skip_streak"] = 0
         s["mistake_streak"] = {"type": None, "count": 0}
         step = s["procedure"]["steps"][s["current"]]
@@ -567,17 +751,20 @@ def undo(sid, now=None):
         return public(s, len(s["transcript"]), _drain(s))
 
 
-def restart_step(sid, now=None):
+def restart_step(sid, now=None, step=None):
     """Start the current step over: earlier camera lines no longer count, streaks/breakdown reset, and the
     'Feeling confused?' offer and mistake warnings for this step can come back."""
     s = get(sid)
     with s["busy"]:
+        if _stale(s, step):
+            return public(s, len(s["transcript"]), _drain(s))
         if s["current"] >= len(s["steps_state"]):
             raise SessionError("all steps are done - use Undo to re-open the last one")
         now = time.time() if now is None else now
         step = s["procedure"]["steps"][s["current"]]
         s["steps_state"][s["current"]]["started_elapsed"] = round(now - s["t0"], 1)
         s["step_since"], s["coach_tip"], s["breakdown"] = now, None, None
+        s["off_track"] = None
         s["done_streak"] = s["skip_streak"] = 0
         s["mistake_streak"] = {"type": None, "count": 0}
         s["confused"].pop(step["number"], None)
@@ -589,13 +776,14 @@ def restart_step(sid, now=None):
 def dismiss(sid, feedback_id):
     """'Got it' on a coach card. Also exits the step-by-step breakdown if one is open."""
     s = get(sid)
-    for fb in s["feedback"]:
-        if fb["id"] == feedback_id:
-            fb["dismissed"] = True
-            if s["breakdown"]:
-                s["breakdown"] = None
-                s["step_since"] = time.time()
-            return public(s, len(s["transcript"]), [])
+    with s["busy"]:   # like the other manual actions: never interleave with a scribe tick
+        for fb in s["feedback"]:
+            if fb["id"] == feedback_id:
+                fb["dismissed"] = True
+                if s["breakdown"]:
+                    s["breakdown"] = None
+                    s["step_since"] = time.time()
+                return public(s, len(s["transcript"]), [])
     raise SessionError("feedback not found")
 
 

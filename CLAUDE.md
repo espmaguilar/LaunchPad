@@ -57,10 +57,61 @@ after each one with test steps for the user.
   wrong_order. Real-model scenario suite: 28/28 after these fixes (avg 0.9 s per check).
   Advance modes (`/api/health.advance_mode`, env ADVANCE_MODE). DEFAULT = "instant" (2026-11-08, user: "as soon as
   a line like that comes, the next step comes ... when a human does something it's instant"): ONE matcher check with
-  done / in_progress / next_step_detected >= DONE_MIN_CONFIDENCE (0.55), no mistake, AND a transcript line since the
+  done / in_progress / next_step_detected >= INSTANT_MIN_CONFIDENCE (0.3 - Llama gave "in_progress 0.4" for "Holding
+  up a stuffed animal" because its number meant "not finished"; 0.55 blocked correct matches for 30 s; the matcher
+  prompt now defines confidence as "sure about the STATUS"), no mistake, AND a transcript line since the
   step started names a KEY OBJECT (`sessions._key_words`: key_terms objects + visual cues + (aliases), minus generic
-  scenery and BODY PARTS like head/ears, plus _ALIASES e.g. iphone->phone). "Lifting hands high" can't tick
-  "put on headphones". No vision check, no min time. `checks[].confirm` says which line matched.
+  scenery and BODY PARTS like head/ears, plus _ALIASES e.g. iphone->phone, stuffed->plush/teddy/toy) AND shows the
+  step's ACTION (`_step_groups` -> `_ACTION_GROUPS` stems: open = unscrew/twist/open/uncap, close = screw/tighten/cap
+  back, tilt, turn, photo, wear, remove, ...; generic handling (place/hold/pick up) only when the step has no other
+  verb). ONLY the action sentence counts, never the scribe's list of visible objects. No vision check, no min time.
+  `checks[].confirm` says which line matched.
+  Why (real session 61035e, user's lab record PDF): the object-only rule ticked step 3 on "Replacing a stuffed animal
+  with a silver bottle", step 5 on "Lowering a silver metal bottle" (steps 3-5 all share "bottle", one per tick) and
+  step 6 on "No visible action" because a background toy was in `objects`. That run is `test_data/session_61035e.json`
+  and `test_replay.py` replays it (old rule fails, new rule passes; real matcher replay agrees).
+  Scribe: holding/showing/wearing counts as an action ("Holding a stuffed dog up to the camera.") - step 2 was marked
+  manually because the scribe wrote "No visible action" for 18 s while the toy was held (prompt fix NOT yet verified
+  on real frames - the frames were lost in a server reload).
+- [x] Off-track coach cards (user: "if another action is being done instead ... it should show in the coach chat. It
+  used to show but not anymore" - the lenient/instant branches skipped the old strict-only possible_skip path, and the
+  "generous" matcher almost never reports mistakes): `sessions._check_off_track` (instant mode, when the step didn't
+  advance): the NEWEST line shows ANOTHER step's action+object (same `_key_object_line` rule) and not the current
+  step's -> buffer: same other step on 2 checks in a row >= OFF_TRACK_SECONDS (6) apart; "No visible action" or a
+  different line resets. Then feedback (wrong_order for a later step, incomplete for an already-done one) + snapshot
+  + voice "Hold on — that looks like step 4. Let's finish step 3 first: ..." -> chat mistake card; once per step;
+  corrected when the step completes. Matcher mistakes (2 x same type >= 0.7) still apply. Replay of real run f16faa
+  (`test_data/session_f16faa.json`) must produce NO cards.
+- [x] One name per object (user: "silver water bottle" in the scribe but "toothbrush" on the grid): the grid's
+  detector is EfficientDet-Lite0 (80 COCO classes, ~320 px input, low thresholds) and never talked to the scribe.
+  Now the detector only gives POSITIONS; names come from the scribe: it returns `boxes` [{name, box}] (normalized,
+  corner-format [x1,y1,x2,y2] auto-converted, max 4; repeats refresh boxes). `hands.setScribeObjects` -> the object the
+  action sentence is about goes to the ONE box a hand holds; other boxes take the best-overlapping scribe box name
+  (Llama boxes are rough: photo test = 1 offset, 1 on empty background, so they're only a hint). Unnamed boxes =
+  faint outline, no label. Detector classes are no longer shown or sent to the scribe ("an object" instead).
+  Scribe prompt: look at frame 2 first; identical frames = holding still -> "Holding a ..."; never "No visible action"
+  with something in hand (photo test: 3/3 now describe holding; before, 2 identical frames -> "No visible action").
+- [x] Detection pauses while LabScribe speaks (user: "When the person is saying the instruction, no detection occurs.
+  Detection only works after speech"): `voice.ts` tracks speaking from speak() (incl. loading the MP3) until `ended` /
+  speechSynthesis onend / error / mute, with a safety timeout (4 s + 70 ms per char). `lab.ts` tick sends nothing while
+  speaking and clears the 2-frame ring when speech ends (no frames from during speech). Badge: "LISTEN · DETECTION
+  PAUSED" (amber dot). Browser check: intro voice 0.4-9.1 s, first frames sent at 9.4 s. Applies to all speech (step
+  announcements, mistakes, coach answers). Muted = no pause. MediaPipe overlay keeps drawing (visual only).
+- [x] FIXED "Internal Server Error" (root cause found): DynamoDB returns numbers as Decimal; after CONFUSED_AFTER_SECONDS
+  the confused offer stores `s["confused"][Decimal(1)]`, and json.dumps can't use a Decimal as a dict KEY (default=
+  doesn't apply to keys) -> every request on that session (scribe, end, session list) = 500. Introduced by session
+  saving / the JSON copy in public() (FastAPI's encoder used to hide it); tests never saw it (mock procedures use
+  ints). Fix: `store.plain()` converts Decimals in get_procedure and again in `sessions.start`. Test 17 in
+  test_matcher. Also: `public()` copies via JSON with retries, `_save` never raises, `_saved_at` created at start.
+- [x] Code-review fixes (2026-11-08): (1) manual clicks send `{step: n}` = step number on screen (0 = all done) with
+  steps/done|undo|restart and substeps/done; inside the session lock `_stale()` -> return state unchanged (a tick that
+  advanced 2 -> 3 can't be followed by a stale "done step 2" ticking step 3). No body = old behaviour. Test 18.
+  (2) instant mode skips `matcher.confirm_done` (one Bedrock call less per in_progress tick). (3) `dismiss` takes the
+  busy lock. (4) README: demo without --reload (sessions are in memory).
+- [x] Session logs: `sessions._save` writes session_logs/{id}/session.json (procedure, transcript, checks, steps,
+  feedback, config) at most every 2 s + on end, and frames/{frame_id}.jpg for every new transcript line. Gitignored,
+  SAVE_SESSIONS=false disables (tests do). Survives server reloads (sessions themselves still don't). Turn a real
+  run into a replay test by copying it into test_data/ with expectations in test_replay.py.
   Previous default "careful" (2026-11-08, user: "things are done in haste" -
   "put on headphones" ticked when hands were lifted high): matcher "done" >= DONE_MIN_CONFIDENCE (0.55) OR "in_progress" >=
   IN_PROGRESS_MIN_CONFIDENCE (0.55, only when the frame is really checked - compound steps like "unscrew the cap.
@@ -179,7 +230,8 @@ after each one with test steps for the user.
   every page), `pages/LabSession.tsx`, `pages/Procedures.tsx`, `pages/Records.tsx`, `pages/Instructor.tsx` (list, upload, processing, review editor),
   `pages/Settings.tsx`, `voice.ts` (speak + mute + Safari unlock), `design.css` (Figma design) +
   `app.css` (additions). Rebuild: `cd frontend && npm run build`.
-- Tests: `test_procedures.py`, `test_scribe.py`, `test_matcher.py`, `test_voice.py`, `test_parser.py`.
+- Tests: `test_procedures.py`, `test_scribe.py`, `test_matcher.py`, `test_voice.py`, `test_parser.py`,
+  `test_replay.py` (real recorded sessions in `test_data/`).
 
 ## Notes
 - Real test 2026-11-08: demo manual -> Textract + Llama 4 Scout in 6.2 s, 6 steps with visual expected

@@ -1,0 +1,260 @@
+{
+ "note": "Real session 61035e390b32 (2026-11-07). Old rules ticked steps 3-6 wrongly; step 2 was marked manually at ~36 s.",
+ "procedure": {
+  "title": "Demo Lab: Specimen Handling Procedure",
+  "steps": [
+   {
+    "camera_checkable": true,
+    "expected_action": "headphones on student's head",
+    "instruction": "Put on hearing protection: place the headphones over both ears.",
+    "number": 1,
+    "required_ppe": [
+     "headphones"
+    ],
+    "safety_critical": true,
+    "section": "",
+    "visual_cues": [
+     "headphones",
+     "student's head"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "stuffed animal centered, facing camera",
+    "instruction": "Place the specimen (stuffed animal) in the center of the workspace, facing the camera.",
+    "number": 2,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "stuffed animal",
+     "workspace"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "reagent bottle in hand, cap on table",
+    "instruction": "Pick up the reagent bottle (water bottle) and unscrew the cap. Set the cap down on the table.",
+    "number": 3,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "water bottle",
+     "cap",
+     "table"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "bottle tilted above specimen",
+    "instruction": "Simulate dispensing: tilt the open bottle above the specimen for 3 seconds without pouring. Do not pour. Hold the bottle at least 15 cm above the specimen.",
+    "number": 4,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "water bottle",
+     "stuffed animal"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "bottle capped, set aside",
+    "instruction": "Screw the cap back on and set the bottle to the side of the workspace.",
+    "number": 5,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "water bottle",
+     "workspace"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "specimen facing away from camera",
+    "instruction": "Turn the specimen around so its back faces the camera.",
+    "number": 6,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "stuffed animal",
+     "workspace"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "iPhone in hand, pointed at specimen",
+    "instruction": "Pick up the data recorder (iPhone) and take a photo of the specimen.",
+    "number": 7,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "iPhone",
+     "stuffed animal"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "iPhone face down, headphones off",
+    "instruction": "Place the iPhone face down on the table, then remove your headphones.",
+    "number": 8,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "iPhone",
+     "headphones",
+     "table"
+    ]
+   }
+  ]
+ },
+ "transcript": [
+  {
+   "elapsed": 3.1,
+   "last_elapsed": null,
+   "action": "No visible action."
+  },
+  {
+   "elapsed": 7.3,
+   "last_elapsed": null,
+   "action": "Tilting head down and to the right."
+  },
+  {
+   "elapsed": 11.8,
+   "last_elapsed": null,
+   "action": "Adjusting headphones on head."
+  },
+  {
+   "elapsed": 16.7,
+   "last_elapsed": null,
+   "action": "Removing headphones from head."
+  },
+  {
+   "elapsed": 21.4,
+   "last_elapsed": 39.4,
+   "action": "No visible action."
+  },
+  {
+   "elapsed": 44.0,
+   "last_elapsed": null,
+   "action": "Replacing a stuffed animal with a silver bottle."
+  },
+  {
+   "elapsed": 49.0,
+   "last_elapsed": null,
+   "action": "Lowering and tilting a silver bottle."
+  },
+  {
+   "elapsed": 54.1,
+   "last_elapsed": null,
+   "action": "Lowering a silver metal bottle."
+  },
+  {
+   "elapsed": 59.2,
+   "last_elapsed": null,
+   "action": "Moving a silver cylinder down."
+  },
+  {
+   "elapsed": 64.1,
+   "last_elapsed": null,
+   "action": "No visible action."
+  }
+ ],
+ "checks": [
+  {
+   "elapsed": 3.1,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 7.3,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 11.8,
+   "status": "done",
+   "confidence": 1.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 16.7,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 21.4,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 25.7,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 30.3,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 34.9,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 39.4,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 44.0,
+   "status": "in_progress",
+   "confidence": 0.6,
+   "mistake": false
+  },
+  {
+   "elapsed": 49.0,
+   "status": "in_progress",
+   "confidence": 0.8,
+   "mistake": false
+  },
+  {
+   "elapsed": 54.1,
+   "status": "in_progress",
+   "confidence": 0.8,
+   "mistake": false
+  },
+  {
+   "elapsed": 59.2,
+   "status": "in_progress",
+   "confidence": 0.2,
+   "mistake": false
+  },
+  {
+   "elapsed": 64.1,
+   "status": "in_progress",
+   "confidence": 0.4,
+   "mistake": false
+  }
+ ],
+ "manual_done": [
+  {
+   "elapsed": 36.0,
+   "step": 2
+  }
+ ]
+}

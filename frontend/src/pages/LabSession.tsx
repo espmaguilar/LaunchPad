@@ -180,7 +180,7 @@ function CameraFeed({ lab, running, mock, elapsed, confidence }: { lab: Lab; run
           <video ref={ref} muted playsInline aria-label="Live bench camera" />
           <div className="camera-vignette" />
           <HandOverlay videoRef={ref} />
-          <div className="camera-label"><i /><span>{running ? "AI WATCHING" : "CAMERA ON"}</span></div>
+          <div className={`camera-label ${running && lab.speaking ? "paused" : ""}`}><i /><span>{!running ? "CAMERA ON" : lab.speaking ? "LISTEN · DETECTION PAUSED" : "AI WATCHING"}</span></div>
           {showCallout && (() => {
             const f = last.focus;
             // focus = [x, y, w, h] of the action in the (cover-cropped) frame; center of that box
@@ -249,8 +249,8 @@ function HandOverlay({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement 
     const anyFocus = st.objects.some((o) => o.focus);
     for (const o of st.objects) {
       const x = X(o.box.x), y = Y(o.box.y), w = o.box.w * v.videoWidth * sc, h = o.box.h * v.videoHeight * sc;
-      if (anyFocus && !o.focus) {
-        // not in the instruction: faint outline, no label, so the key objects stand out
+      if (!o.name || (anyFocus && !o.focus)) {
+        // unnamed (the scribe hasn't named it) or not in the instruction: faint outline, no label
         g.globalAlpha = 0.3;
         g.strokeStyle = "rgba(255,255,255,0.8)";
         g.lineWidth = 1;
@@ -260,14 +260,14 @@ function HandOverlay({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement 
         g.globalAlpha = 1;
         continue;
       }
-      g.globalAlpha = o.stale ? 0.45 : o.maybe ? 0.75 : 1;   // fading = kept briefly after the detector lost it
+      g.globalAlpha = o.fromScribe ? 0.6 : o.stale ? 0.45 : 1;   // scribe-only box: position up to ~3 s old
       g.strokeStyle = o.focus ? "rgba(45, 212, 191, 1)" : o.heldBy ? "rgba(52, 211, 153, 0.95)" : "rgba(251, 191, 36, 0.9)";
       g.lineWidth = o.focus ? 3 : 2;
-      g.setLineDash(o.focus ? [] : o.maybe ? [2, 4] : [6, 4]);
+      g.setLineDash(o.fromScribe ? [3, 4] : o.focus ? [] : [6, 4]);
       g.strokeRect(x, y, w, h);
       g.setLineDash([]);
       const lines = [
-        `${o.focus ? "★ " : ""}${o.label}${o.maybe ? "?" : ""}${o.heldBy ? ` · ${o.heldBy} hand` : ""} · ${o.height}${o.motion ? ` · ${o.motion}` : ""}`,
+        `${o.focus ? "★ " : ""}${o.name}${o.heldBy ? ` · ${o.heldBy} hand` : ""} · ${o.height}${o.motion ? ` · ${o.motion}` : ""}`,
         ...(o.relations.length ? [o.relations.join(" · ")] : []),
       ];
       const tw = Math.max(...lines.map((s) => g.measureText(s).width)) + 10, lh = 16, top = Math.max(0, y - lh * lines.length - 2);
