@@ -6,8 +6,8 @@ import { speak, unlockAudio } from "../voice";
 
 type Lab = ReturnType<typeof useLab>;
 
-export default function SettingsPage({ lab, muted, toggleVoice, onSaved }: {
-  lab: Lab; muted: boolean; toggleVoice: () => void; onSaved: (s: Settings) => void;
+export default function SettingsPage({ lab, muted, toggleVoice }: {
+  lab: Lab; muted: boolean; toggleVoice: () => void;
 }) {
   const [meta, setMeta] = useState<SettingsResponse | null>(null);
   const [s, setS] = useState<Settings | null>(null);
@@ -28,7 +28,7 @@ export default function SettingsPage({ lab, muted, toggleVoice, onSaved }: {
     setMsg(null);
     try {
       const r = await post<{ settings: Settings }>("/api/settings", s, "PUT");
-      setS(r.settings); setSaved(r.settings); onSaved(r.settings);
+      setS(r.settings); setSaved(r.settings);
       setMsg({ tone: "ok", text: "Settings saved." });
     } catch (e) {
       setMsg({ tone: "error", text: (e as Error).message });
@@ -54,16 +54,11 @@ export default function SettingsPage({ lab, muted, toggleVoice, onSaved }: {
           <div><strong>Coach voice</strong><p>Read corrections and next steps aloud with Amazon Polly.</p></div>
           <button className={`toggle ${muted ? "" : "on"}`} aria-pressed={!muted} aria-label="Coach voice" onClick={toggleVoice}><i /></button>
         </div>
-        <div className="setting-row disabled">
-          <div className="setting-icon"><Icon name="shield" /></div>
-          <div><strong>Block on safety steps</strong><p>Pause the procedure until required PPE is confirmed by the camera. Arrives with the PPE check (next phase).</p></div>
-          <button className="toggle on" disabled aria-label="Block on safety steps (coming soon)"><i /></button>
-        </div>
       </section>
 
       {s && meta && (
         <section className="settings-card card">
-          <h2>Voice, camera & workspace</h2>
+          <h2>Voice & camera</h2>
           <div className="setting-row">
             <div className="setting-icon"><Icon name="mic" /></div>
             <div><strong>Amazon Polly voice</strong><p>Neural voice used for step guidance and corrections (cached per phrase).</p></div>
@@ -81,13 +76,6 @@ export default function SettingsPage({ lab, muted, toggleVoice, onSaved }: {
             <div className="setting-control">
               <input type="range" min={0} max={20} value={pct} onChange={(e) => set("min_person_area", +e.target.value / 100)} aria-label="Minimum person size" />
               <code>{pct}%</code>
-            </div>
-          </div>
-          <div className="setting-row">
-            <div className="setting-icon"><Icon name="file" /></div>
-            <div><strong>Workspace name</strong><p>Shown in the sidebar and on lab records.</p></div>
-            <div className="setting-control">
-              <input className="text-input" value={s.workspace_name} maxLength={60} onChange={(e) => set("workspace_name", e.target.value)} aria-label="Workspace name" />
             </div>
           </div>
         </section>

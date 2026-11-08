@@ -136,7 +136,6 @@ export interface LabSession {
   events?: SessionEvent[];
 }
 export interface Settings {
-  workspace_name: string;
   polly_voice: string;
   min_person_area: number;
 }

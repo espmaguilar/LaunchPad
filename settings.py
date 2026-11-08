@@ -17,7 +17,6 @@ POLLY_VOICES = {"Joanna": "Joanna · US English", "Matthew": "Matthew · US Engl
                 "Ruth": "Ruth · US English", "Stephen": "Stephen · US English"}
 
 DEFAULTS = {
-    "workspace_name": "LabScribe",
     "polly_voice": config.POLLY_VOICE_ID,
     "min_person_area": config.MIN_PERSON_AREA,
 }
@@ -57,7 +56,6 @@ def validate(s):
     if not 0 <= area <= 0.5:
         raise SettingsError("minimum person size must be between 0 and 0.5.")
     return {
-        "workspace_name": str(s.get("workspace_name") or "").strip()[:60] or DEFAULTS["workspace_name"],
         "polly_voice": s.get("polly_voice") if s.get("polly_voice") in POLLY_VOICES else "Joanna",
         "min_person_area": area,
     }

@@ -208,7 +208,7 @@ after each one with test steps for the user.
   Approve & start session / save only, saved library), Lab Records (from real session data: timeline with evidence +
   snapshots, deviations, mistakes; print-to-PDF; Bedrock tips come in Phase E), Instructor View (KPIs, sessions,
   most common mistakes by step - real data from `GET /api/sessions`), Settings (camera, coach voice, Polly voice +
-  test, background filter, workspace; "Block on safety steps" shown disabled until Phase D).
+  test, background filter, workspace).
 - `frontend/src`: `App.tsx` shell (owns `useLab` from `lab.ts`: camera + session loop keeps running on
   every page), `pages/LabSession.tsx`, `pages/Procedures.tsx`, `pages/Records.tsx`, `pages/Instructor.tsx` (list, upload, processing, review editor),
   `pages/Settings.tsx`, `voice.ts` (speak + mute + Safari unlock), `design.css` (Figma design) +

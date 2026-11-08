@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Health, type SettingsResponse } from "./api";
+import { api, type Health } from "./api";
 import { hhmmss } from "./format";
 import { useLab } from "./lab";
 import { Icon, Logo, type IconName } from "./ui";
@@ -23,7 +23,6 @@ const pageFromHash = (): Page => NAV.find((n) => location.hash === `#/${n.page}`
 export default function App() {
   const [page, setPageState] = useState<Page>(pageFromHash);
   const [health, setHealth] = useState<Health | null>(null);
-  const [workspace, setWorkspace] = useState("LabScribe");
   const [muted, setMutedState] = useState(isMuted());
   const [recordId, setRecordId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -51,7 +50,6 @@ export default function App() {
   }, []);
   useEffect(() => {
     loadHealth();
-    api<SettingsResponse>("/api/settings").then((s) => setWorkspace(s.settings.workspace_name)).catch(() => {});
     const t = window.setInterval(loadHealth, 15000);
     return () => window.clearInterval(t);
   }, [loadHealth]);
@@ -67,7 +65,6 @@ export default function App() {
     instructor: "Instructor overview",
     settings: "Settings",
   };
-  const initials = workspace.split(/[\s·]+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 3).toUpperCase();
 
   return (
     <div className="app-shell">
@@ -75,14 +72,6 @@ export default function App() {
         <Logo />
         <button className="sidebar-collapse" onClick={toggleSidebar} title={collapsed ? "Open sidebar" : "Collapse sidebar"}
           aria-label={collapsed ? "Open sidebar" : "Collapse sidebar"}>
-          <Icon name="chevron" size={15} />
-        </button>
-        <button className="workspace" onClick={() => setPage("settings")} title="Workspace settings">
-          <div className="workspace-icon">{initials}</div>
-          <div>
-            <span>Workspace</span>
-            <strong>{workspace}</strong>
-          </div>
           <Icon name="chevron" size={15} />
         </button>
         <nav>
@@ -120,7 +109,7 @@ export default function App() {
       <div className="workspace-area">
         {page !== "live" && <header className="topbar">
           <div className="top-title">
-            <span>{workspace}</span>
+            <span>LabScribe</span>
             <strong>{titles[page]}</strong>
           </div>
           <div className="top-actions">
@@ -135,7 +124,7 @@ export default function App() {
               <Icon name="volume" size={16} />
               <span>Coach voice {muted ? "off" : "on"}</span>
             </button>
-            <button className="avatar" onClick={() => setPage("settings")} title={workspace}>{initials.slice(0, 2)}</button>
+            <button className="avatar" onClick={() => setPage("settings")} title="Settings">LS</button>
           </div>
         </header>}
         <div className="page-scroll">
@@ -149,7 +138,7 @@ export default function App() {
           {page === "records" && <Records selected={recordId} setSelected={setRecordId} />}
           {page === "instructor" && <Instructor openRecord={(id) => { setRecordId(id); setPage("records"); }} />}
           {page === "settings" && (
-            <SettingsPage lab={lab} muted={muted} toggleVoice={toggleVoice} onSaved={(s) => setWorkspace(s.workspace_name)} />
+            <SettingsPage lab={lab} muted={muted} toggleVoice={toggleVoice} />
           )}
         </div>
       </div>
