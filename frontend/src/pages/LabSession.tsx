@@ -283,15 +283,27 @@ function CoachPanel({ lab, sess, speaking }: { lab: Lab; sess: Session | null; s
         </div>
         <div className="coach-online"><Icon name="spark" size={13} /> {sess && !sess.ended_at ? "Active" : "Standby"}</div>
       </div>
-      {open.length ? (
+      {open.length > 0 && (
         <div className="mistake-stack">
           {open.map((f) => <MistakeCard key={f.id} f={f} sid={sess!.session_id} onDismiss={lab.dismiss} />)}
         </div>
-      ) : (
+      )}
+      {sess && !sess.ended_at && !sess.complete ? (
+        <div className="tip-suggestion">
+          <div className="tip-head">
+            <span><Icon name="spark" size={14} /></span>
+            <small>COACH SUGGESTION · STEP {sess.procedure.steps[sess.current]?.number}</small>
+          </div>
+          <p>{sess.coach_tip?.text || `Start with: ${sess.procedure.steps[sess.current]?.instruction}`}</p>
+          {sess.last_check && (
+            <em>Last check: {STATUS_LINE[sess.last_check.status]?.replace("…", "") || sess.last_check.status} · {Math.round(sess.last_check.confidence * 100)}%</em>
+          )}
+        </div>
+      ) : !open.length && (
         <div className="all-clear">
           <span><Icon name="check" /></span>
-          <strong>{flagged ? "You’re back on track" : sess ? "Looking good so far" : "Ready when you are"}</strong>
-          <p>{sess ? "I’ll keep watching each step." : "Corrections and tips show up here."}</p>
+          <strong>{sess?.complete ? "Every step done — great work" : flagged ? "You’re back on track" : sess ? "Session ended" : "Ready when you are"}</strong>
+          <p>{sess ? "Open the lab record to review your run." : "Tips and corrections show up here during a session."}</p>
         </div>
       )}
       {speaking && (

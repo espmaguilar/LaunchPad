@@ -49,6 +49,9 @@ DONE_MIN_CONFIDENCE = 0.5 if LENIENT_ADVANCE else MATCH_MIN_CONFIDENCE
 DONE_CHECKS = 1 if LENIENT_ADVANCE else 2  # consecutive qualifying checks before advancing
 MISTAKE_CHECKS = 2              # consecutive confident detections of the same mistake before flagging
 SKIP_CHECKS = 2                 # consecutive "next_step_detected" before "Possible skipped step"
+STUCK_SECONDS = 20              # on the same step this long -> the coach speaks its latest tip
+TIP_REPEAT_SECONDS = 45         # ...and at most this often after that
+CHECK_HISTORY = 40              # matcher results kept per session (debugging + lab record)
 
 # --- Vision model (scribe + PPE checks) ---
 # BEDROCK_MODEL_ID must accept images; if it doesn't, this fallback is used.

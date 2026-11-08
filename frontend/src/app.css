@@ -111,3 +111,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .transcript p { white-space: normal !important; overflow-wrap: anywhere; }
 .all-clear, .all-clear strong, .all-clear p { min-width: 0; max-width: 100%; white-space: normal; text-align: center; }
 .mistake-card, .feedback-row p { min-width: 0; overflow-wrap: anywhere; }
+
+/* coach suggestion (always-on tip from the matcher) */
+.tip-suggestion { margin-top: 12px; border: 1px solid #caece8; background: var(--teal-pale); border-radius: 11px; padding: 10px 12px; }
+.tip-head { display: flex; align-items: center; gap: 7px; }
+.tip-head span { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; background: #fff; color: var(--teal-dark); }
+.tip-head small { font-size: 8px; font-weight: 700; letter-spacing: 1px; color: var(--teal-dark); }
+.tip-suggestion p { margin: 8px 0 4px; font-size: 13px; line-height: 1.4; color: var(--ink); font-weight: 550; }
+.tip-suggestion em { font-style: normal; font-size: 10px; color: var(--muted); }

@@ -55,6 +55,11 @@ after each one with test steps for the user.
   yes/no `confirm_done` call (only when in_progress) checks the step's DONE-WHEN condition; it must see the
   action/result, not just objects. "wrong_material" that is a later step's material -> `refine` makes it
   wrong_order. Real-model scenario suite: 28/28 after these fixes (avg 0.9 s per check).
+  Default LENIENT_ADVANCE (config): anything resembling the step (done / in_progress / next_step_detected,
+  >= 0.5, one check) advances; mistakes stay strict. Strict mode = old behaviour.
+  Coach suggestions: matcher also returns `tip` (always); Coach panel shows the latest; spoken when the
+  student has been on a step >= STUCK_SECONDS (20 s), at most every TIP_REPEAT_SECONDS (45 s). Each session
+  keeps its last 40 checks (`checks`) for debugging; `/api/health` reports `advance_mode`.
   Mock: `scribe.MOCK_SCRIPT` lines carry demo-step tags (incl. a vinegar-before-coloring mistake) and
   `matcher.mock_check` is deterministic.
 - [ ] **D. Safety + deviations**: before safety_critical steps, Bedrock vision checks required PPE;

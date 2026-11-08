@@ -110,8 +110,8 @@ assert n["status"] == "in_progress" and n["confidence"] <= 0.4
 n = matcher.normalize({"status": "wrong_action", "confidence": 0.9, "mistake": True, "mistake_type": "oops"})
 assert n["mistake"] is False                              # unexplained -> not shown to the student
 n = matcher.normalize({"status": "done", "confidence": "0.8", "mistake": "false", "evidence": " poured  water "})
-assert n == {"status": "done", "confidence": 0.8, "evidence": "poured water", "mistake": False, "mistake_type": "",
-             "what_went_wrong": "", "how_to_fix": ""}
+assert n == {"status": "done", "confidence": 0.8, "evidence": "poured water", "tip": "", "mistake": False,
+             "mistake_type": "", "what_went_wrong": "", "how_to_fix": ""}
 
 # 7. Prompt: whole step list, current + next step, and only the transcript since the current step began
 s = sessions.start(PROC)
@@ -175,6 +175,24 @@ s = sessions.start(PROC)
 res = run(s, 17)
 kinds = [e["type"] for r in res for e in r["state"]["events"]]
 assert kinds.count("mistake") == 1 and kinds[-1] == "complete" and kinds.count("step_done") == 5, kinds
+# 11. Coach tips: latest tip shown; spoken once the student is stuck for STUCK_SECONDS, not more often
+#     than TIP_REPEAT_SECONDS; reset when the step changes. Check history is kept.
+config.STUCK_SECONDS, config.TIP_REPEAT_SECONDS = 20, 45
+s = sessions.start(PROC)
+t0 = s["t0"]
+spoken = lambda: [e for e in s["events"] if e["type"] == "tip"]
+sessions.apply_check(s, check("not_started", tip="Pick up the goggles."), t0 + 5)
+assert s["coach_tip"]["text"] == "Pick up the goggles." and not spoken()
+sessions.apply_check(s, check("not_started", tip="Goggles are on the left."), t0 + 21)
+assert [e["voice"] for e in spoken()] == ["Goggles are on the left."]
+sessions.apply_check(s, check("not_started", tip="Try the goggles."), t0 + 40)
+assert len(spoken()) == 1                                         # quiet period
+sessions.apply_check(s, check("not_started", tip="Try the goggles."), t0 + 67)
+assert len(spoken()) == 2
+sessions.apply_check(s, check("done", tip="Great."), t0 + 70)
+assert s["current"] == 1 and s["coach_tip"] is None              # new step: fresh start
+assert len(s["checks"]) == 5 and s["checks"][-1]["status"] == "done"
+assert matcher.normalize({"status": "done", "confidence": 1, "tip": "  Nice   work. "})["tip"] == "Nice work."
 config.LENIENT_ADVANCE = False
 
 print("all matcher checks passed")

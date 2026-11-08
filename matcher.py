@@ -47,11 +47,15 @@ mistake=false.
 - Tone: encouraging coach, never harsh. Both are "" when mistake is false.
 - expected_seen: true if the transcript shows what the CURRENT step's "DONE WHEN the camera sees" describes
   (judge just that one visual condition, nothing else), else false.
+- tip: ALWAYS give one short, friendly coaching suggestion (max 15 words) for what the student should do
+  next on the CURRENT step, based on what the transcript shows. Examples: "Pick up the water bottle so the
+  camera can see it.", "Nice — now hold the bottle in front of your face.", "Hold the cup still while you add
+  the drops." Never repeat the instruction word for word; never harsh.
 - evidence: the transcript words that justify the status (short quote), or "".
 - confidence: 0.0-1.0, calibrated (0.5 = unsure).
 
 Return ONLY JSON, no prose, no markdown:
-{"status": "...", "expected_seen": false, "confidence": 0.0, "evidence": "...", "mistake": false,
+{"status": "...", "expected_seen": false, "confidence": 0.0, "evidence": "...", "tip": "...", "mistake": false,
  "mistake_type": "", "what_went_wrong": "", "how_to_fix": ""}"""
 
 
@@ -99,6 +103,7 @@ def normalize(d):
         mistake = False  # an unexplained "mistake" is not shown to the student
     return {"status": status, "confidence": round(conf, 2),
             "evidence": re.sub(r"\s+", " ", str(d.get("evidence") or "")).strip()[:200],
+            "tip": re.sub(r"\s+", " ", str(d.get("tip") or "")).strip()[:160],
             "mistake": mistake, "mistake_type": mtype if mistake else "",
             "what_went_wrong": wwg if mistake else "", "how_to_fix": fix if mistake else ""}
 
@@ -186,7 +191,8 @@ def mock_check(steps, current_idx, tag, line):
     """Deterministic matcher for MOCK_MODE using the scripted line's tag."""
     cur = steps[current_idx]["number"]
     base = {"confidence": 0.9, "evidence": line["action"], "mistake": False, "mistake_type": "",
-            "what_went_wrong": "", "how_to_fix": ""}
+            "what_went_wrong": "", "how_to_fix": "",
+            "tip": f"Next up: {steps[current_idx]['instruction'][0].lower()}{steps[current_idx]['instruction'][1:]}"}
     if not tag:
         return {**base, "status": "not_started", "evidence": ""}
     step, kind = tag.get("step"), tag.get("kind")

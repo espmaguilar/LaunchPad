@@ -63,6 +63,10 @@ def start(procedure):
         "flagged": [],          # [(step_number, kind)] already reported (no repeats)
         "feedback": [],         # mistakes + possible skips shown in the Feedback panel
         "last_check": None,     # latest matcher result (for the current-step card)
+        "checks": [],           # recent matcher results (debugging, lab record)
+        "coach_tip": None,      # latest coaching suggestion {step, text, time}
+        "step_since": now,      # when the current step became current (stuck detection)
+        "tip_spoken_at": None,
         "events": [],           # pending UI events (voice), handed out with each response
         "snapshots": {},        # id -> jpeg bytes (in memory until Phase D uploads to S3)
         "last_frame": None,
@@ -82,7 +86,7 @@ def get(sid):
 
 
 ACTIVE_SECONDS = 30  # a session with no tick for this long is shown as idle (tab closed/reloaded)
-HIDDEN = ("busy", "t0", "last_activity", "transcript", "snapshots", "last_frame", "events", "flagged",
+HIDDEN = ("busy", "t0", "last_activity", "step_since", "tip_spoken_at", "transcript", "snapshots", "last_frame", "events", "flagged",
           "done_streak", "skip_streak", "mistake_streak")
 
 
@@ -145,6 +149,7 @@ def _advance(s, now, evidence, method):
     st.update(status="done", done_at=utc_timestamp(now), done_elapsed=round(now - s["t0"], 1),
               evidence=evidence, method=method, snapshot_id=_snapshot(s))
     s["current"] = i + 1
+    s["step_since"], s["tip_spoken_at"], s["coach_tip"] = now, None, None
     s["done_streak"] = s["skip_streak"] = 0
     s["mistake_streak"] = {"type": None, "count": 0}
     if s["current"] < len(steps):
@@ -165,6 +170,18 @@ def apply_check(s, r, now):
         return
     step_no = steps[s["current"]]["number"]
     s["last_check"] = {**r, "step": step_no, "time": utc_timestamp(now)}
+    s["checks"].append({"elapsed": round(now - s["t0"], 1), "step": step_no, "status": r["status"],
+                        "confidence": r["confidence"], "mistake": r["mistake"], "evidence": r["evidence"],
+                        "tip": r.get("tip", "")})
+    del s["checks"][: -config.CHECK_HISTORY]
+    if r.get("tip"):
+        s["coach_tip"] = {"step": step_no, "text": r["tip"], "time": utc_timestamp(now)}
+        # stuck on this step for a while -> say the tip out loud (not too often)
+        stuck = now - s["step_since"] >= config.STUCK_SECONDS
+        quiet = s["tip_spoken_at"] is None or now - s["tip_spoken_at"] >= config.TIP_REPEAT_SECONDS
+        if stuck and quiet and not r["mistake"]:
+            s["tip_spoken_at"] = now
+            _say(s, "tip", r["tip"])
     confident = r["confidence"] >= config.MATCH_MIN_CONFIDENCE
 
     # mistakes: same type twice in a row, confident, once per step + type
@@ -302,6 +319,7 @@ def undo(sid, now=None):
         s["steps_state"][s["current"]].update(status="current", done_at=None, done_elapsed=None, evidence="",
                                               method=None, snapshot_id=None, started_elapsed=round(now - s["t0"], 1))
         s["completed_at"] = None
+        s["step_since"], s["tip_spoken_at"], s["coach_tip"] = now, None, None
         s["done_streak"] = s["skip_streak"] = 0
         s["mistake_streak"] = {"type": None, "count": 0}
         step = s["procedure"]["steps"][s["current"]]

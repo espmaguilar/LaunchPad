@@ -86,7 +86,7 @@ export interface MatchCheck {
   time: string;
 }
 export interface SessionEvent {
-  type: "step_done" | "complete" | "mistake" | "possible_skip" | "undo";
+  type: "step_done" | "complete" | "mistake" | "possible_skip" | "undo" | "tip";
   voice: string;
   step?: number;
   feedback_id?: string;
@@ -118,6 +118,8 @@ export interface LabSession {
   completed_at: string | null;
   complete: boolean;
   active: boolean;
+  coach_tip: { step: number; text: string; time: string } | null;
+  checks: { elapsed: number; step: number; status: string; confidence: number; mistake: boolean; evidence: string; tip: string }[];
   streaks: { done: number; skip: number; mistake: number };
   events?: SessionEvent[];
 }

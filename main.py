@@ -70,6 +70,7 @@ def health():
         "region": config.AWS_REGION,
         "model": config.BEDROCK_MODEL_ID,
         "vision_model": vision.active_model(),
+        "advance_mode": "lenient" if config.LENIENT_ADVANCE else "strict",
         "scribe": {"interval": config.SCRIBE_INTERVAL_SECONDS, "frame_gap": config.SCRIBE_FRAME_GAP_SECONDS,
                    "max_width": config.SCRIBE_FRAME_MAX_WIDTH},
         "missing_settings": missing,
