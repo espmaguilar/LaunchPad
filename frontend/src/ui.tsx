@@ -71,6 +71,10 @@ const icons: Record<string, ReactNode> = {
     </>
   ),
   arrow: <path d="M5 12h14m-5-5 5 5-5 5" />,
+  flask: <path d="M9 3h6M10 3v6L4.5 18.5A2 2 0 0 0 6.2 21.5h11.6a2 2 0 0 0 1.7-3L14 9V3M7.5 15h9" />,
+  up: <path d="m6 15 6-6 6 6" />,
+  down: <path d="m6 9 6 6 6-6" />,
+  shield: <path d="M12 2.5 20 6v6c0 5-3.4 8.4-8 9.5-4.6-1.1-8-4.5-8-9.5V6z" />,
 };
 
 export function Icon({ name, size = 18 }: { name: string; size?: number }) {
@@ -95,11 +99,12 @@ export function Logo() {
   return (
     <div className="logo">
       <svg width="32" height="32" viewBox="0 0 32 32" aria-hidden>
-        <path d="M16 2.5 27 6v8.5c0 7.2-4.6 12-11 15-6.4-3-11-7.8-11-15V6z" fill="#FFB020" />
-        <path d="M8.8 15.6s2.7-4 7.2-4 7.2 4 7.2 4-2.7 4-7.2 4-7.2-4-7.2-4Z" fill="#0B0D10" />
-        <circle cx="16" cy="15.6" r="2.2" fill="#FFB020" />
+        <rect x="2" y="2" width="28" height="28" rx="8" fill="#FFB020" />
+        <path d="M13 8h6M14 8v6l-5 8.2A1.6 1.6 0 0 0 10.4 25h11.2a1.6 1.6 0 0 0 1.4-2.8L18 14V8" fill="none"
+          stroke="#0B0D10" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M11.5 20h9" stroke="#0B0D10" strokeWidth="2" strokeLinecap="round" />
       </svg>
-      <span>SafeSight</span>
+      <span>LabScribe</span>
     </div>
   );
 }
@@ -114,20 +119,6 @@ export function PageTitle({ title, subtitle, action }: { title: string; subtitle
       {action}
     </div>
   );
-}
-
-export function Status({ value }: { value: string }) {
-  return (
-    <span className={`status ${value.toLowerCase().replace(" ", "-")}`}>
-      <i />
-      {value}
-    </span>
-  );
-}
-
-export function DetectorTag({ detector }: { detector?: string }) {
-  const ai = detector === "AI vision";
-  return <span className={`det-tag ${ai ? "ai" : "rek"}`}>{ai ? "AI vision" : "Rekognition"}</span>;
 }
 
 export function Banner({ tone, children, onClose }: { tone: "error" | "ok" | "info"; children: ReactNode; onClose?: () => void }) {

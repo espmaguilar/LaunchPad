@@ -1,8 +1,11 @@
-"""Create SafeSight AWS resources. Safe to run repeatedly (idempotent).
+"""Create LabScribe AWS resources. Safe to run repeatedly (idempotent).
+
+Creates: the private S3 bucket (manual PDFs, snapshots) and the DynamoDB table
+labscribe-procedures (PK procedure_id, on-demand billing).
 
 Usage:
-    python setup_aws.py --check    # read-only: show identity + what exists
-    python setup_aws.py            # create anything missing, seed zones
+    python setup_aws.py --check    # read-only: identity, what exists, service permissions
+    python setup_aws.py            # create anything missing
 """
 import argparse
 import sys
@@ -10,7 +13,7 @@ import sys
 from botocore.exceptions import ClientError, NoCredentialsError
 
 import config
-from aws_clients import dynamodb, s3, session, sns
+from aws_clients import dynamodb, s3, session
 
 
 def ok(msg):
@@ -81,57 +84,13 @@ def create_table(name, key_schema, attr_defs):
     ok(f"DynamoDB table {name} created")
 
 
-def seed_zones():
-    table = dynamodb.Table(config.ZONES_TABLE)
-    for z in config.DEFAULT_ZONES:
-        table.put_item(Item={**z, "alert_email": config.ALERT_EMAIL})
-    ok(f"seeded {len(config.DEFAULT_ZONES)} zones: {', '.join(z['zone_id'] for z in config.DEFAULT_ZONES)}")
-
-
-# ---------- SNS ----------
-def find_topic_arn():
-    for page in sns.get_paginator("list_topics").paginate():
-        for t in page["Topics"]:
-            if t["TopicArn"].endswith(":" + config.SNS_TOPIC_NAME):
-                return t["TopicArn"]
-    return None
-
-
-def email_subscription(topic_arn, email):
-    for page in sns.get_paginator("list_subscriptions_by_topic").paginate(TopicArn=topic_arn):
-        for sub in page["Subscriptions"]:
-            if sub["Protocol"] == "email" and sub["Endpoint"].lower() == email.lower():
-                return sub["SubscriptionArn"]  # "PendingConfirmation" until clicked
-    return None
-
-
-def create_topic_and_subscribe():
-    topic_arn = sns.create_topic(Name=config.SNS_TOPIC_NAME)["TopicArn"]  # idempotent
-    ok(f"SNS topic {topic_arn}")
-    sub = email_subscription(topic_arn, config.ALERT_EMAIL)
-    if sub is None:
-        sns.subscribe(TopicArn=topic_arn, Protocol="email", Endpoint=config.ALERT_EMAIL)
-        todo(f"subscription email sent to {config.ALERT_EMAIL} - click 'Confirm subscription' in it")
-    elif sub == "PendingConfirmation":
-        todo(f"{config.ALERT_EMAIL} has not confirmed yet - check inbox/spam")
-    else:
-        ok(f"{config.ALERT_EMAIL} subscribed and confirmed")
-    return topic_arn
-
-
 # ---------- main ----------
 def check():
     """Read-only report. Creates nothing."""
     print("\nResources:")
     print(f"  S3 bucket {config.S3_BUCKET}: {'exists' if bucket_exists(config.S3_BUCKET) else 'MISSING'}")
-    for t in (config.ZONES_TABLE, config.VIOLATIONS_TABLE):
-        print(f"  DynamoDB {t}: {'exists' if table_exists(t) else 'MISSING'}")
-    arn = find_topic_arn()
-    print(f"  SNS topic {config.SNS_TOPIC_NAME}: {arn or 'MISSING'}")
-    if arn:
-        sub = email_subscription(arn, config.ALERT_EMAIL)
-        state = "not subscribed" if sub is None else ("pending confirmation" if sub == "PendingConfirmation" else "confirmed")
-        print(f"  Email {config.ALERT_EMAIL}: {state}")
+    t = config.PROCEDURES_TABLE
+    print(f"  DynamoDB {t}: {'exists' if table_exists(t) else 'MISSING  -> run: python setup_aws.py'}")
 
 
 def check_services():
@@ -186,7 +145,7 @@ def check_services():
               f"(voice warnings will use the browser's speech instead)")
 
     if not config.BEDROCK_MODEL_ID:
-        print("  Bedrock converse: skipped (BEDROCK_MODEL_ID empty -> template reports)")
+        print("  Bedrock converse: skipped (BEDROCK_MODEL_ID empty -> steps must be entered by hand)")
         return
     try:
         session.client("bedrock-runtime").converse(
@@ -199,7 +158,7 @@ def check_services():
         print(f"  Bedrock converse with {config.BEDROCK_MODEL_ID}: FAILED - "
               f"{e.response['Error']['Code']}: {e.response['Error'].get('Message', '')[:200]}")
         print("    -> set BEDROCK_MODEL_ID to one of the IDs/profiles listed above "
-              "(reports fall back to a template until then)")
+              "(manual ingestion falls back to the numbered-list parser until then)")
 
     check_vision(session)
 
@@ -218,7 +177,7 @@ def _test_png(size=64):
 
 
 def check_vision(session):
-    """AI-vision rules need a model that accepts images: try BEDROCK_MODEL_ID, then the fallback."""
+    """The Scribe and PPE checks need a model that accepts images: BEDROCK_MODEL_ID, then the fallback."""
     client = session.client("bedrock-runtime")
     img = _test_png()
     for model in dict.fromkeys([config.BEDROCK_MODEL_ID, config.VISION_FALLBACK_MODEL_ID]):
@@ -236,38 +195,24 @@ def check_vision(session):
             role = "configured model" if model == config.BEDROCK_MODEL_ID else "fallback"
             print(f"  Bedrock vision with {model} ({role}): ok (said: {said!r})")
             if model != config.BEDROCK_MODEL_ID:
-                print("    -> AI-vision rules will use the fallback model automatically")
+                print(f"    -> BEDROCK_MODEL_ID ({config.BEDROCK_MODEL_ID}) does NOT accept images; the Scribe and PPE "
+                      "checks will use the fallback model automatically")
             return
         except ClientError as e:
             print(f"  Bedrock vision with {model}: FAILED - {e.response['Error']['Code']}: "
                   f"{e.response['Error'].get('Message', '')[:160]}")
-    print("    -> AI-vision rules will show 'Check failed' until a vision model is available "
-          "(Rekognition gear checks are unaffected)")
+    print("    -> NO vision model available: the Scribe and PPE checks won't work until BEDROCK_MODEL_ID "
+          "(or VISION_FALLBACK_MODEL_ID) is a model that accepts images")
 
 
 def create():
     print("\nCreating (idempotent):")
     create_bucket(config.S3_BUCKET)
     create_table(
-        config.ZONES_TABLE,
-        [{"AttributeName": "zone_id", "KeyType": "HASH"}],
-        [{"AttributeName": "zone_id", "AttributeType": "S"}],
+        config.PROCEDURES_TABLE,
+        [{"AttributeName": "procedure_id", "KeyType": "HASH"}],
+        [{"AttributeName": "procedure_id", "AttributeType": "S"}],
     )
-    create_table(
-        config.VIOLATIONS_TABLE,
-        [
-            {"AttributeName": "zone_id", "KeyType": "HASH"},
-            {"AttributeName": "timestamp", "KeyType": "RANGE"},
-        ],
-        [
-            {"AttributeName": "zone_id", "AttributeType": "S"},
-            {"AttributeName": "timestamp", "AttributeType": "S"},
-        ],
-    )
-    seed_zones()
-    topic_arn = create_topic_and_subscribe()
-    if config.SNS_TOPIC_ARN != topic_arn:
-        print(f"\n>>> Put this in your .env:\nSNS_TOPIC_ARN={topic_arn}")
 
 
 def main():
@@ -275,7 +220,7 @@ def main():
     parser.add_argument("--check", action="store_true", help="read-only; create nothing")
     args = parser.parse_args()
 
-    for name in ("S3_BUCKET", "ALERT_EMAIL"):
+    for name in ("S3_BUCKET",):
         if not getattr(config, name):
             sys.exit(f"{name} is empty. Copy .env.example to .env and fill it in.")
 
