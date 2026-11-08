@@ -91,7 +91,8 @@ def analyze(image_bytes, required):
 
 
 # ---------------- Mock ----------------
-MOCK_CYCLE_SECONDS = 24  # first half: person 2 violates; second half: everyone compliant
+MOCK_CYCLE_SECONDS = 60  # person 2 violates for the first MOCK_MISSING_SECONDS, then complies
+MOCK_MISSING_SECONDS = 36  # > 30 s so the voice (20 s) and the supervisor notification (30 s) both fire
 
 
 def _mock_part(name, gear_type, worn):
@@ -116,11 +117,11 @@ def _mock_person(pid, box, missing_gear):
 def mock_response(required):
     """Fake response in the exact shape Rekognition returns.
 
-    Person 2 is missing the zone's first required gear for 12s, then puts it on,
-    so you can watch the boxes flip red -> green (and later test debounce/resolve).
+    Person 2 is missing the zone's first two required items for 36s of every 60s, then
+    puts it on: voice at 20s, supervisor notified at 30s, resolved ~10s after the fix.
     """
-    violating = (time.time() % MOCK_CYCLE_SECONDS) < MOCK_CYCLE_SECONDS / 2
-    p2_missing = {required[0]} if (violating and required) else set()
+    violating = (time.time() % MOCK_CYCLE_SECONDS) < MOCK_MISSING_SECONDS
+    p2_missing = set(required[:2]) if violating else set()  # two items -> one grouped incident
     return {
         "Persons": [
             _mock_person(0, {"Left": 0.06, "Top": 0.12, "Width": 0.34, "Height": 0.82}, set()),

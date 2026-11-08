@@ -100,7 +100,9 @@ def page_stream(lines):
     return "\n".join(ops).encode("latin-1")
 
 
-def build():
+def build(pages_content=None, out=None, title="Brightwater Labs PPE Policy EHS-200"):
+    pages_content = pages_content or CONTENT
+    out_path = Path(out or OUT)
     objs = []  # index 0 -> object 1
 
     def add(body):
@@ -112,7 +114,7 @@ def build():
     f1 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
     f2 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
     kids = []
-    for lines in CONTENT:
+    for lines in pages_content:
         stream = page_stream(lines)
         content = add(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
         kids.append(add(
@@ -130,9 +132,9 @@ def build():
     out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
     out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
     out += (f"trailer\n<< /Size {len(objs) + 1} /Root {catalog} 0 R "
-            f"/Info << /Title (Brightwater Labs PPE Policy EHS-200) >> >>\nstartxref\n{xref}\n%%EOF\n").encode()
-    OUT.write_bytes(bytes(out))
-    print(f"wrote {OUT} ({len(out):,} bytes, {len(CONTENT)} pages)")
+            f"/Info << /Title ({esc(title)}) >> >>\nstartxref\n{xref}\n%%EOF\n").encode()
+    out_path.write_bytes(bytes(out))
+    print(f"wrote {out_path} ({len(out):,} bytes, {len(pages_content)} pages)")
 
 
 if __name__ == "__main__":

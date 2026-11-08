@@ -11,7 +11,7 @@
   <header>
     <div class="brand">Safe<span>Sight</span></div>
     <span id="mockBadge" class="badge hidden">MOCK MODE</span>
-    <span id="demoBadge" class="badge demo hidden" title="Short escalation timers for demos">DEMO TIMERS</span>
+    <span id="demoBadge" class="badge demo hidden" title="Short resolve confirmation for demos">DEMO TIMERS</span>
     <div class="controls">
       <a class="nav-link" href="/setup" style="color:var(--accent);text-decoration:none;font-size:14px">Policy setup</a>
       <label>Zone
@@ -62,6 +62,8 @@
     <aside class="side-panel">
       <h2>Zone requirements</h2>
       <div id="requiredGear" class="chips"></div>
+      <p id="chipLegend" class="chip-legend"><span class="det rek">Rekognition</span> every frame
+        <span class="det ai">AI vision</span> Bedrock, every 10 s</p>
 
       <h2>Live status</h2>
       <div id="zoneStatus" class="zone-status idle">Waiting…</div>
@@ -69,6 +71,9 @@
 
       <h2>Detection logic</h2>
       <ul id="trackingList" class="tracking-list"></ul>
+
+      <h2>AI vision checks</h2>
+      <div id="aiVision" class="ai-vision"></div>
     </aside>
   </main>
 
@@ -98,7 +103,7 @@
     <div class="table-scroll">
     <table class="incident-table">
       <thead>
-        <tr><th>Time</th><th>Zone</th><th>Missing</th><th>OSHA rule</th>
+        <tr><th>Time</th><th>Zone</th><th>Issue</th><th>Rule</th>
             <th class="num">Potential fine exposure</th><th>Status</th><th>Report</th></tr>
       </thead>
       <tbody id="incidentRows">

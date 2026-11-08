@@ -30,8 +30,9 @@ GEAR_KEYWORDS = [
     ("HEAD_COVER", ["hard hat", "hardhat", "helmet", "head protection", "head cover", "bump cap"]),
 ]
 # Checked first, so e.g. "face shield" or "safety goggles" never map to a camera type.
-NOT_CAMERA = ["goggle", "glasses", "eyewear", "face shield", "vest", "boot", "shoe", "footwear",
-              "ear", "hearing", "apron", "coat", "harness", "sleeve"]
+# Whole-word matches: plain substrings made "wear gloves" hit "ear" (ear protection).
+NOT_CAMERA = re.compile(r"\b(goggles?|glasses|eyewear|face ?shields?|vests?|boots?|shoes?|footwear|"
+                        r"ears?|earplugs?|earmuffs?|hearing|aprons?|coats?|harness(es)?|sleeves?)\b")
 
 
 class PolicyError(Exception):
@@ -40,7 +41,7 @@ class PolicyError(Exception):
 
 def map_gear(item):
     text = (item or "").lower()
-    if any(w in text for w in NOT_CAMERA):
+    if NOT_CAMERA.search(text):
         return UNMONITORED
     for gear, words in GEAR_KEYWORDS:
         if any(w in text for w in words):
@@ -124,14 +125,15 @@ def extract_text(pdf_bytes, key):
 
 
 # ---------------- 3. Bedrock -> JSON ----------------
-SYSTEM_PROMPT = """You extract workplace PPE requirements from a company safety policy.
+SYSTEM_PROMPT = """You extract workplace safety requirements from a company safety policy: required PPE \
+AND visible conduct rules a camera could check (e.g. "No phones in use", "No raised hands").
 
 Return ONLY a JSON object, no prose, no markdown fences, exactly this shape:
 {"zones": [
   {"name": "<zone or area name as written>",
    "supervisor_email": "<email if stated, else null>",
    "gear": [
-     {"item": "<required PPE item as written, e.g. 'nitrile gloves'>",
+     {"item": "<required PPE item or conduct rule as written, e.g. 'nitrile gloves' or 'No phones in use'>",
       "rule_reference": "<policy section and/or regulation cited for it, e.g. 'Sec. 4.2 / 29 CFR 1910.138', else null>",
       "severity": "<Serious | Willful | Repeat | Other-than-serious, as stated, else null>",
       "fine_usd": <integer fine amount stated in the policy for this item or zone, else null>}
@@ -139,8 +141,9 @@ Return ONLY a JSON object, no prose, no markdown fences, exactly this shape:
 ]}
 
 Rules:
-- One entry per physical work area/zone that has PPE requirements. Skip zones with none.
-- One gear entry per distinct PPE item. Include every required item (eye, foot, hi-vis, hearing too).
+- One entry per physical work area/zone that has requirements. Skip zones with none.
+- One gear entry per distinct PPE item or conduct rule. Include every required item (eye, foot, hi-vis,
+  hearing too) and every conduct rule, keeping prohibitions phrased as prohibitions ("No ...", "Do not ...").
 - Only use facts written in the document. Never invent fines, sections, or emails: use null.
 - fine_usd is a plain integer (16550, not "$16,550")."""
 

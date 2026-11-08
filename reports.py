@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from botocore.exceptions import BotoCoreError, ClientError
 
 import config
+import records
 import store
 from tracker import utc_timestamp
 
@@ -59,28 +60,55 @@ TEMPLATES = {
 
 def _facts(item):
     rule = config.rule_for(None, item["gear_type"])  # fallback if the record predates per-zone rules
-    return {
+    items = records.items_of(item)
+    f = {
         "zone": item["zone_name"],
-        "missing_gear": config.GEAR_LABELS[item["gear_type"]],
+        "missing_gear": " and ".join(records.labels(item)),
+        "detected_by": " + ".join(dict.fromkeys(i.get("detector") or config.detector(i["gear"]) for i in items)),
         "people_without_gear": int(item.get("people", 1)),
         "time_utc": item["timestamp"],
-        "osha_rule": item.get("osha_rule") or rule["label"],
+        "osha_rule": "; ".join(dict.fromkeys(i.get("rule") or "" for i in items)) or item.get("osha_rule") or rule["label"],
         "severity": item.get("severity") or rule["severity"],
-        "potential_fine_exposure_usd": int(item["fine"]),
-        "confirmed_over_frames": config.DEBOUNCE_FRAMES,
+        "potential_fine_exposure_usd": sum(int(i.get("fine", 0)) for i in items),
+        "items": [{"item": i.get("label"), "rule": i.get("rule"), "fine_usd": int(i.get("fine", 0)),
+                   "detected_by": i.get("detector")} for i in items],
+        "missing_continuously_seconds_before_logging": config.VOICE_AFTER_SECONDS,
+    }
+    reasons = [i.get("ai_reason") for i in items if config.is_ai(i["gear"]) and i.get("ai_reason")]
+    if reasons:
+        f["ai_vision_reason"] = "; ".join(reasons)
+        f["confirmed_by_consecutive_ai_checks"] = config.AI_DEBOUNCE_CHECKS
+    if all(config.is_ai(i["gear"]) for i in items):
+        f.pop("missing_continuously_seconds_before_logging")
+    return f
+
+
+def _ai_template(rule):
+    return {
+        "risk": f'Breaking the "{rule}" rule exposes workers to the hazard the site policy was written to control.',
+        "fix": f'Stop and correct the situation so the "{rule}" rule is followed before work continues.',
+        "prevention": f'Re-brief the team on the "{rule}" rule and post it at the zone entrance.',
     }
 
 
 def template_narrative(item):
     f = _facts(item)
-    t = TEMPLATES[item["gear_type"]]
+    items = records.items_of(item)
+    first = items[0]["gear"]
+    t = TEMPLATES.get(first) or _ai_template(f["missing_gear"])
     people = f["people_without_gear"]
     who = "1 worker was" if people == 1 else f"{people} workers were"
-    return {
-        "summary": f"{who} detected in {f['zone']} without required {f['missing_gear']}, "
-                   f"confirmed over {f['confirmed_over_frames']} consecutive camera frames.",
-        **t,
-    }
+    if all(config.is_ai(i["gear"]) for i in items):
+        reason = f.get("ai_vision_reason")
+        summary = (f'AI vision flagged the "{f["missing_gear"]}" rule in {f["zone"]} on '
+                   f"{config.AI_DEBOUNCE_CHECKS} consecutive checks" + (f": {reason}" if reason else "."))
+    else:
+        summary = (f"{who} detected in {f['zone']} without required {f['missing_gear']}, "
+                   f"missing continuously for at least {config.VOICE_AFTER_SECONDS} seconds.")
+    if len(items) > 1:  # combine the fixes for every item
+        extra = [TEMPLATES.get(i["gear"]) or _ai_template(i.get("label", "")) for i in items[1:]]
+        t = {k: " ".join([t[k]] + [e[k] for e in extra]) for k in ("risk", "fix", "prevention")}
+    return {"summary": summary, **t}
 
 
 def _parse_json(text):
@@ -158,7 +186,7 @@ def _weekly_facts(st):
         "potential_fine_exposure_open_usd": w["fine_exposure"],
         "potential_fines_avoided_usd": w["fines_avoided"],
         "average_seconds_to_fix": w["avg_seconds_to_fix"],
-        "violations_by_gear": {config.GEAR_LABELS[g]: n for g, n in w["by_gear"].items()},
+        "violations_by_gear": {config.gear_label(g): n for g, n in w["by_gear"].items()},
         "violations_by_zone": {z: sum(c.values()) for z, c in st["by_zone"].items()},
         "riskiest_zone": st["riskiest_zone"],
     }
@@ -180,11 +208,13 @@ def weekly_template(st):
                    f"${w['fine_exposure']:,} in potential fine exposure remains from unresolved violations.",
         "highlights": [
             f"{rz['zone']} was the riskiest zone with {rz['violations']} violations.",
-            f"Most frequently missing gear: {config.GEAR_LABELS[top_gear]}.",
+            f"Most frequent issue: {config.gear_label(top_gear)}.",
         ] + ([f"Average time to fix: {w['avg_seconds_to_fix']} seconds."] if w["avg_seconds_to_fix"] else []),
         "recommendations": [
             f"Run a short PPE refresher for everyone working in {rz['zone']}.",
-            f"Place a {config.GEAR_LABELS[top_gear]} station at the entrance of each zone that requires it.",
+            (f'Re-brief every shift on the "{config.gear_label(top_gear)}" rule and post it at zone entrances.'
+             if config.is_ai(top_gear) else
+             f"Place a {config.gear_label(top_gear)} station at the entrance of each zone that requires it."),
             "Ask supervisors to review open incidents daily and confirm the fix.",
         ],
     }

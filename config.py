@@ -80,13 +80,70 @@ OSHA_RULES = {
 
 
 
+# --- AI-vision rules (Bedrock looks at the frame) ---
+# Policy items Rekognition can't check (goggles, vests, "no phones"...) are stored in
+# zone["unmonitored"]. They are checked by a Bedrock vision model every AI_CHECK_SECONDS
+# and tracked under keys like "AI:no-phones" in the same tracker pipeline.
+AI_PREFIX = "AI:"
+AI_CHECK_SECONDS = 10          # one vision check per active zone this often
+AI_DEBOUNCE_CHECKS = 2         # consecutive positive checks before an incident
+AI_MIN_CONFIDENCE = 0.6        # below this a "violated" answer is treated as unsure
+AI_DEFAULT_FINE = 0            # AI rule with no fine stated
+VISION_FALLBACK_MODEL_ID = _env("VISION_FALLBACK_MODEL_ID", "us.amazon.nova-lite-v1:0")
+
+
+def is_ai(gear):
+    return str(gear).startswith(AI_PREFIX)
+
+
+def ai_key(item):
+    import re
+    return AI_PREFIX + (re.sub(r"[^a-z0-9]+", "-", str(item).lower()).strip("-")[:40] or "rule")
+
+
+def ai_rules(zone):
+    """[{key, item, rule, severity, fine, source}] for a zone (or tracker meta)."""
+    out, seen = [], set()
+    for u in (zone or {}).get("unmonitored") or []:
+        if not u.get("item"):
+            continue
+        key = ai_key(u["item"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({**u, "key": key})
+    return out
+
+
+def gear_label(gear, zone=None):
+    """Human label for a Rekognition gear type or an AI rule key."""
+    if gear in GEAR_LABELS:
+        return GEAR_LABELS[gear]
+    for r in ai_rules(zone):
+        if r["key"] == gear:
+            return r["item"]
+    return str(gear)[len(AI_PREFIX):].replace("-", " ") if is_ai(gear) else str(gear)
+
+
+def detector(gear):
+    return "AI vision" if is_ai(gear) else "Rekognition"
+
+
 def rule_for(zone, gear):
-    """Rule/severity/fine for a gear type in a zone.
+    """Rule/severity/fine for a gear type (or AI rule key) in a zone.
 
     Zones approved from a policy PDF carry their own rules (zone["rules"][gear]);
     otherwise - or for any field the policy didn't state - the OSHA table applies.
-    `zone` can be a zone record or the tracker's meta dict (both may have "rules").
+    AI rules come from zone["unmonitored"]; with no fine stated they use AI_DEFAULT_FINE.
+    `zone` can be a zone record or the tracker's meta dict.
     """
+    if is_ai(gear):
+        r = next((r for r in ai_rules(zone) if r["key"] == gear), {})
+        fine = r.get("fine")
+        return {"label": r.get("rule") or r.get("item") or gear_label(gear, zone),
+                "severity": r.get("severity") or "Other-than-serious",
+                "fine": int(fine) if fine not in (None, "") else AI_DEFAULT_FINE,
+                "source": r.get("source") or ("policy" if fine not in (None, "") else "no fine set")}
     osha = OSHA_RULES[gear]
     custom = ((zone or {}).get("rules") or {}).get(gear) or {}
     return {
@@ -98,18 +155,27 @@ def rule_for(zone, gear):
 
 
 # --- Smart logic ---
-# DEMO_MODE=true in .env shortens the escalation timers so a pitch can show every tier.
+# Timeline for one missing gear item (continuous non-compliance):
+#   0s  first frame where someone is missing it
+#   20s still missing        -> log the incident + VOICE warning on site (no message)
+#   30s still missing        -> ONE supervisor notification (email now; SMS/Twilio later)
+# A frame where the gear is visibly worn restarts the clock. Frames with no
+# evidence (person stepped out, hands hidden) don't restart it, unless no miss
+# has been seen for MISS_GAP_SECONDS.
+# DEMO_MODE only shortens the resolve confirmation; the 20s / 30s thresholds are the same.
 DEMO_MODE = _env("DEMO_MODE", "false").lower() in ("1", "true", "yes")
 
-DEBOUNCE_FRAMES = 3            # same gear missing N frames in a row -> violation + voice warning
-VOICE_REPEAT_SECONDS = 10      # still missing this long after the warning -> say it once more
-VOICE_MAX_PLAYS = 2            # voice plays per violation (initial + 1 repeat)
-ALERT_GRACE_SECONDS = 20 if DEMO_MODE else 120   # Tier 2: still OPEN -> one supervisor email
-ESCALATION_SECONDS = 60 if DEMO_MODE else 600    # Tier 3: still OPEN -> one escalation email
+VOICE_AFTER_SECONDS = int(_env("VOICE_AFTER_SECONDS", "20"))    # continuous miss -> incident + voice
+NOTIFY_AFTER_SECONDS = int(_env("NOTIFY_AFTER_SECONDS", "30"))  # continuous miss -> supervisor notified
+MISS_GAP_SECONDS = 6           # no miss seen this long (no evidence either way) -> streak restarts
 RESOLVE_SECONDS = 10 if DEMO_MODE else 30        # hysteresis: continuous compliance needed to resolve
 RESOLVE_WINDOW_SECONDS = 300   # fixed within this long after logging -> counts as "fine avoided"
-ZONE_STALE_SECONDS = 10        # no frames from a zone this long -> pause its email timers ("camera offline")
-TICK_SECONDS = 1               # background escalation check interval
+EXPIRE_SECONDS = 600           # unresolved this long -> stop tracking (stays OPEN); a new streak = new incident
+ZONE_STALE_SECONDS = 10        # no frames from a zone this long -> pause its timers ("camera offline")
+TICK_SECONDS = 1               # background notification check interval
+
+# Supervisor notification channel. "email" = SNS topic. "sms" (Twilio) is not wired yet.
+NOTIFY_CHANNEL = _env("NOTIFY_CHANNEL", "email").lower()
 
 # --- Voice (Amazon Polly) ---
 POLLY_VOICE_ID = "Joanna"

@@ -88,7 +88,9 @@ video { display: block; width: 100%; height: auto; }
 
 .tracking-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .tracking-list li { background: #0b0d11; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
-.tracking-list .gear { font-weight: 600; display: flex; justify-content: space-between; }
+.tracking-list .gear { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.tracking-list .gear .label { flex: 1; min-width: 0; }
+.tracking-list .gear .det, .tracking-list .gear .pill { flex: none; }
 .tracking-list .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
 .pill { font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 700; }
 .pill.open { background: var(--bad); color: #fff; }
@@ -223,3 +225,21 @@ button.secondary:disabled { opacity: .6; cursor: wait; }
 .toast.escalation { border-left-color: var(--bad); }
 
 .chip.off { color: var(--muted); border-style: dashed; }
+
+/* Detector labels: Rekognition (every frame) vs AI vision (Bedrock, every 10 s) */
+.det { font-size: 10px; font-weight: 700; letter-spacing: .02em; padding: 1px 6px; border-radius: 4px;
+  vertical-align: middle; white-space: nowrap; }
+.det.rek { background: rgba(57,135,229,.18); color: #8db8f0; }
+.det.ai { background: rgba(201,133,0,.18); color: #f0c060; }
+.chip.rek { border-color: rgba(57,135,229,.6); }
+.chip.ai { border-color: rgba(201,133,0,.7); border-style: dashed; }
+.chip-legend { font-size: 11px; color: var(--muted); margin: 8px 0 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ai-vision .small, .muted.small { font-size: 12px; margin: 0 0 6px; }
+.ai-results { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.ai-results li { background: #0b0d11; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+.ai-results .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.verdict { font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 999px; }
+.verdict.bad { background: var(--bad); color: #fff; }
+.verdict.ok { background: rgba(34,197,94,.2); color: var(--ok); }
+.verdict.unsure { background: #262b36; color: var(--muted); }
+.ai-error { color: var(--warn); font-size: 12px; margin: 0 0 6px; word-break: break-word; }

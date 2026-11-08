@@ -19,6 +19,24 @@
   <div id="okBanner" class="banner ok hidden"></div>
 
   <main class="setup">
+    <section class="card" id="rulesCard">
+      <h2>Quick rules (no PDF needed)</h2>
+      <p class="muted-text">Add a free-text rule to a live zone, e.g. "No phones" with a $500 fine. AI vision
+        (Amazon Bedrock) checks it on the camera feed every 10 s; 2 positive checks in a row log an incident,
+        play the voice warning and notify the supervisor, just like Rekognition gear.</p>
+      <div class="rule-form">
+        <label class="field">Zone<select id="ruleZone"></select></label>
+        <label class="field grow">Rule (what the camera should look for)
+          <input type="text" id="ruleText" maxlength="120" placeholder="No phones in use"></label>
+        <label class="field">Potential fine ($)<input type="number" id="ruleFine" min="0" step="1" placeholder="500"></label>
+        <label class="field">Severity<select id="ruleSev">
+          <option value="Other-than-serious">Other-than-serious</option><option value="Serious">Serious</option>
+          <option value="Willful">Willful</option><option value="Repeat">Repeat</option></select></label>
+        <button id="ruleAddBtn">Add rule</button>
+      </div>
+      <ul id="ruleList" class="rule-list"></ul>
+    </section>
+
     <section class="card">
       <h2>1. Upload your safety policy</h2>
       <p class="muted-text">PDF up to 10 MB. Text is extracted with Amazon Textract, then Amazon Bedrock turns the
@@ -40,8 +58,8 @@
       <ul id="warnings" class="warnings"></ul>
       <details class="text-preview"><summary>Extracted text (first 1,500 characters)</summary><pre id="textPreview"></pre></details>
       <p class="legend">
-        <span class="pill-cam">Camera-checked</span> gloves, face cover, head protection (Amazon Rekognition).
-        <span class="pill-off">Not camera-monitored</span> kept in the policy record, but the camera can't check it.
+        <span class="pill-cam">Rekognition</span> gloves, face cover, head protection, every frame.
+        <span class="pill-ai">AI vision</span> goggles, vests, "no phones"… checked by a Bedrock vision model every 10 s.
       </p>
       <div id="zones"></div>
       <button id="addZoneBtn" class="secondary">+ Add zone</button>

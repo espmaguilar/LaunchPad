@@ -201,6 +201,49 @@ def check_services():
         print("    -> set BEDROCK_MODEL_ID to one of the IDs/profiles listed above "
               "(reports fall back to a template until then)")
 
+    check_vision(session)
+
+
+def _test_png(size=64):
+    """A small solid-grey PNG built in-process (no Pillow needed)."""
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + b"\x80\x80\x80" * size for _ in range(size))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def check_vision(session):
+    """AI-vision rules need a model that accepts images: try BEDROCK_MODEL_ID, then the fallback."""
+    client = session.client("bedrock-runtime")
+    img = _test_png()
+    for model in dict.fromkeys([config.BEDROCK_MODEL_ID, config.VISION_FALLBACK_MODEL_ID]):
+        if not model:
+            continue
+        try:
+            resp = client.converse(
+                modelId=model,
+                messages=[{"role": "user", "content": [
+                    {"image": {"format": "png", "source": {"bytes": img}}},
+                    {"text": "What colour is this image? One word."}]}],
+                inferenceConfig={"maxTokens": 20},
+            )
+            said = "".join(b.get("text", "") for b in resp["output"]["message"]["content"]).strip()[:40]
+            role = "configured model" if model == config.BEDROCK_MODEL_ID else "fallback"
+            print(f"  Bedrock vision with {model} ({role}): ok (said: {said!r})")
+            if model != config.BEDROCK_MODEL_ID:
+                print("    -> AI-vision rules will use the fallback model automatically")
+            return
+        except ClientError as e:
+            print(f"  Bedrock vision with {model}: FAILED - {e.response['Error']['Code']}: "
+                  f"{e.response['Error'].get('Message', '')[:160]}")
+    print("    -> AI-vision rules will show 'Check failed' until a vision model is available "
+          "(Rekognition gear checks are unaffected)")
+
 
 def create():
     print("\nCreating (idempotent):")

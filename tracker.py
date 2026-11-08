@@ -1,35 +1,31 @@
-"""Smart logic: debounce, tiered escalation, hysteresis. Pure in-memory, no AWS.
+"""Smart logic: time-based streaks, voice warning, one supervisor notification,
+hysteresis. Pure in-memory, no AWS.
 
-Per (zone, gear type):
-  miss      consecutive frames where someone is missing that gear
-  ok_since  when continuous compliance started (None = not currently compliant)
-  open      the logged violation we're escalating / watching for a fix
+Timeline for one (zone, gear type), counted from the first missing frame:
+   0s                    someone is missing the gear (streak starts)
+  VOICE_AFTER  (20s)     still missing -> log the incident + VOICE warning. No message.
+  NOTIFY_AFTER (30s)     still OPEN    -> ONE supervisor notification (email now, SMS later).
+  => at most one notification per incident. Other open incidents in the same zone
+     ride along in that same notification, so 2 missing items = 1 message, not 2.
 
-Frame rules for a gear type (update(), called per camera frame):
-  someone missing it            -> miss += 1, ok_since = None (compliance broken)
-  people seen, all wearing it   -> miss = 0, ok_since = ok_since or now
+Frame rules (update(), called per camera frame):
+  someone missing it            -> streak continues (or starts); compliance broken
+  people seen, all wearing it   -> streak cleared; compliance timer starts
   no evidence (nobody visible,
-  or body part hidden)          -> miss = 0, ok_since unchanged
-     (walking out of frame neither confirms nor breaks a fix)
+  or body part hidden)          -> neutral, unless no miss for MISS_GAP_SECONDS -> streak cleared
 
-Tiers for one violation:
-  Tier 1  miss reaches DEBOUNCE_FRAMES  -> log violation + VOICE warning (no email).
-          Still missing VOICE_REPEAT_SECONDS later -> one repeat (max VOICE_MAX_PLAYS).
-  Tier 2  still OPEN after ALERT_GRACE_SECONDS  -> ONE supervisor email.
-  Tier 3  still OPEN after ESCALATION_SECONDS   -> ONE escalation email.
-          => never more than 2 emails per violation.
-  Emails are held while the violation is mid-resolve (compliance timer running).
-  Stale zone: no frames for ZONE_STALE_SECONDS (camera stopped / switched zones)
-  -> email timers PAUSE (paused time doesn't count) and resume when frames return.
-
-Thread safety: update() (request threads), tick() (background thread) and
-status() all take the same lock.
+Notifications are held while a fix is being confirmed (compliance timer running).
+Stale zone: no frames for ZONE_STALE_SECONDS (camera stopped / switched zones)
+  -> timers PAUSE (paused time doesn't count) and resume when frames return.
 
 Resolve (hysteresis): gear visibly worn and no miss for RESOLVE_SECONDS.
   fixed within RESOLVE_WINDOW_SECONDS of logging -> RESOLVED, fine avoided
   fixed later                                    -> fixed_late (exposure stands)
-Expire: unfixed after max(RESOLVE_WINDOW, ESCALATION) -> stop tracking; it stays
-  OPEN and a new streak can log a new incident.
+Expire: unresolved after EXPIRE_SECONDS -> stop tracking; it stays OPEN and a
+  new streak can log a new incident.
+
+Thread safety: update() (request threads), tick() (background thread) and
+status() all take the same lock.
 """
 import threading
 import time
@@ -47,95 +43,147 @@ def utc_timestamp(epoch):
 class Tracker:
     def __init__(self):
         self.lock = threading.Lock()
-        self.miss = {}
-        self.ok_since = {}
-        self.open = {}  # key -> dict, see _new_open
+        self.miss_since = {}  # key -> start of the current missing streak (None = no streak)
+        self.last_miss = {}   # key -> time of the latest missing frame
+        self.ok_since = {}    # key -> start of continuous compliance (None = not compliant)
+        self.open = {}        # key -> dict, see _new_open
         self.last_frame = {}  # zone_id -> time of last frame
+        self.ai_hits = {}     # key -> consecutive positive AI-vision checks
 
     @staticmethod
-    def _new_open(ts, now, meta):
-        return {"timestamp": ts, "logged_at": now, "voice_count": 1, "last_voice_at": now,
-                "emailed_at": None, "escalated_at": None, "meta": meta or {},
+    def _new_open(ts, now, streak_start, meta):
+        return {"timestamp": ts, "logged_at": now, "streak_start": streak_start,
+                "notified_at": None, "meta": meta or {},
                 "paused_total": 0.0, "paused_since": None}
 
     @staticmethod
     def _active_age(o, now):
-        """Seconds open, excluding time the zone's camera was offline."""
+        """Seconds since the streak started, excluding time the zone's camera was offline."""
         paused = o["paused_total"] + ((now - o["paused_since"]) if o["paused_since"] is not None else 0)
-        return now - o["logged_at"] - paused
+        return now - o["streak_start"] - paused
 
     def _stale(self, zone_id, now):
         return now - self.last_frame.get(zone_id, now) > config.ZONE_STALE_SECONDS
+
+    def _resolving(self, key, now):
+        # Hold notifications while a fix is being confirmed - but not forever
+        # (e.g. compliant once, then walked out of frame).
+        ok_since = self.ok_since.get(key)
+        return ok_since is not None and now - ok_since <= config.RESOLVE_SECONDS + 5
+
+    def _maybe_resolve(self, key, opened, compliant_now, now, events):
+        """Hysteresis: resolve only after RESOLVE_SECONDS of continuous compliance."""
+        ok_since = self.ok_since.get(key)
+        if compliant_now and ok_since is not None and now - ok_since >= config.RESOLVE_SECONDS:
+            del self.open[key]
+            fix_secs = max(0, round(ok_since - opened["logged_at"]))
+            in_window = ok_since - opened["logged_at"] <= config.RESOLVE_WINDOW_SECONDS
+            events.append({
+                "type": "resolved" if in_window else "fixed_late",
+                "gear": key[1],
+                "timestamp": opened["timestamp"],
+                "seconds_to_fix": fix_secs,
+                "notified": opened["notified_at"] is not None,
+            })
+
+    def _resume(self, zone_id, now):
+        """Frames are back: resume any paused timers in this zone."""
+        self.last_frame[zone_id] = now
+        for (z, _), o in self.open.items():
+            if z == zone_id and o["paused_since"] is not None:
+                o["paused_total"] += now - o["paused_since"]
+                o["paused_since"] = None
 
     # ---------------- per frame ----------------
     def update(self, zone_id, required, persons, now=None, meta=None):
         now = time.time() if now is None else now
         events = []
         with self.lock:
-            # Frames are back: resume any paused timers in this zone.
-            self.last_frame[zone_id] = now
-            for (z, _), o in self.open.items():
-                if z == zone_id and o["paused_since"] is not None:
-                    o["paused_total"] += now - o["paused_since"]
-                    o["paused_since"] = None
+            self._resume(zone_id, now)
 
             for gear in required:
                 key = (zone_id, gear)
                 missing_now = any(gear in p["missing"] for p in persons)
                 worn_now = not missing_now and any(gear in p["worn"] for p in persons)
+                gap = now - self.last_miss.get(key, now) > config.MISS_GAP_SECONDS
 
                 if missing_now:
-                    self.miss[key] = self.miss.get(key, 0) + 1
+                    if self.miss_since.get(key) is None or gap:
+                        self.miss_since[key] = now
+                    self.last_miss[key] = now
                     self.ok_since[key] = None
                 elif worn_now:
-                    self.miss[key] = 0
+                    self.miss_since[key] = None
                     if self.ok_since.get(key) is None:
                         self.ok_since[key] = now
-                else:
-                    self.miss[key] = 0
+                elif gap:
+                    self.miss_since[key] = None
 
                 opened = self.open.get(key)
+                streak = self.miss_since.get(key)
 
-                # Tier 1: debounced violation -> voice warning
-                if opened is None and self.miss[key] >= config.DEBOUNCE_FRAMES:
-                    ts = utc_timestamp(now)
-                    self.open[key] = self._new_open(ts, now, meta)
-                    self.ok_since[key] = None
-                    events.append({"type": "violation", "gear": gear, "timestamp": ts, "voice": True,
-                                   "people": sum(gear in p["missing"] for p in persons)})
-                    continue
+                # Tier 1: missing continuously for VOICE_AFTER_SECONDS -> incident + voice
                 if opened is None:
+                    if missing_now and streak is not None and now - streak >= config.VOICE_AFTER_SECONDS:
+                        ts = utc_timestamp(now)
+                        self.open[key] = self._new_open(ts, now, streak, meta)
+                        self.ok_since[key] = None
+                        events.append({"type": "violation", "gear": gear, "timestamp": ts, "voice": True,
+                                       "missing_for": round(now - streak),
+                                       "people": sum(gear in p["missing"] for p in persons)})
                     continue
 
-                # Tier 1 repeat: still missing after VOICE_REPEAT_SECONDS
-                if (missing_now and opened["voice_count"] < config.VOICE_MAX_PLAYS
-                        and now - opened["last_voice_at"] >= config.VOICE_REPEAT_SECONDS):
-                    opened["voice_count"] += 1
-                    opened["last_voice_at"] = now
-                    events.append({"type": "voice_repeat", "gear": gear, "timestamp": opened["timestamp"]})
+                self._maybe_resolve(key, opened, worn_now, now, events)
+        return events
 
-                # Hysteresis: resolve only after RESOLVE_SECONDS of continuous compliance
-                ok_since = self.ok_since.get(key)
-                if worn_now and ok_since is not None and now - ok_since >= config.RESOLVE_SECONDS:
-                    del self.open[key]
-                    fix_secs = max(0, round(ok_since - opened["logged_at"]))
-                    in_window = ok_since - opened["logged_at"] <= config.RESOLVE_WINDOW_SECONDS
-                    events.append({
-                        "type": "resolved" if in_window else "fixed_late",
-                        "gear": gear,
-                        "timestamp": opened["timestamp"],
-                        "seconds_to_fix": fix_secs,
-                        "emails_sent": int(opened["emailed_at"] is not None) + int(opened["escalated_at"] is not None),
-                    })
+    # ---------------- AI-vision checks (every AI_CHECK_SECONDS) ----------------
+    def update_ai(self, zone_id, results, now=None, meta=None):
+        """results: {rule_key: True (violated) | False (complied) | None (can't tell)}.
+
+        Checks are ~10 s apart, so the debounce counts CHECKS, not seconds:
+        AI_DEBOUNCE_CHECKS consecutive positives -> incident + voice. From there it's
+        the same pipeline as Rekognition: notify at NOTIFY_AFTER_SECONDS from the first
+        positive, hysteresis resolve, stale-zone pause, expiry."""
+        now = time.time() if now is None else now
+        events = []
+        with self.lock:
+            for rule_key, violated in results.items():
+                key = (zone_id, rule_key)
+                if violated is True:
+                    self.ai_hits[key] = self.ai_hits.get(key, 0) + 1
+                    if self.miss_since.get(key) is None:
+                        self.miss_since[key] = now
+                    self.last_miss[key] = now
+                    self.ok_since[key] = None
+                elif violated is False:
+                    self.ai_hits[key] = 0
+                    self.miss_since[key] = None
+                    if self.ok_since.get(key) is None:
+                        self.ok_since[key] = now
+                # None: unsure -> neutral
+
+                opened = self.open.get(key)
+                if opened is None:
+                    if violated is True and self.ai_hits[key] >= config.AI_DEBOUNCE_CHECKS:
+                        ts = utc_timestamp(now)
+                        self.open[key] = self._new_open(ts, now, self.miss_since[key], meta)
+                        self.ok_since[key] = None
+                        events.append({"type": "violation", "gear": rule_key, "timestamp": ts, "voice": True,
+                                       "missing_for": round(now - self.miss_since[key]), "people": 1})
+                    continue
+                self._maybe_resolve(key, opened, violated is False, now, events)
         return events
 
     # ---------------- time-based (background thread) ----------------
     def tick(self, now=None):
-        """Email tiers + expiry for every open violation in every zone."""
+        """Supervisor notification + expiry for every open incident in every zone.
+
+        Returns at most one "notify" event per zone per tick, listing every open,
+        not-yet-notified, not-resolving incident in that zone."""
         now = time.time() if now is None else now
         events = []
-        expire_after = max(config.RESOLVE_WINDOW_SECONDS, config.ESCALATION_SECONDS)
         with self.lock:
+            due_zones = set()
             for key, o in list(self.open.items()):
                 zone_id, gear = key
                 if self._stale(zone_id, now):
@@ -143,27 +191,63 @@ class Tracker:
                         o["paused_since"] = now
                     continue  # camera offline: timers frozen, nothing fires
                 age = self._active_age(o, now)
-                base = {"zone_id": zone_id, "gear": gear, "timestamp": o["timestamp"], "meta": o["meta"]}
-                # Hold emails while a fix is being confirmed - but not forever
-                # (e.g. compliant once, then walked out of frame).
-                ok_since = self.ok_since.get(key)
-                resolving = ok_since is not None and now - ok_since <= config.RESOLVE_SECONDS + 5
-                if not resolving:
-                    if o["emailed_at"] is None and age >= config.ALERT_GRACE_SECONDS:
-                        o["emailed_at"] = now
-                        events.append({**base, "type": "email", "age": round(age)})
-                    if o["escalated_at"] is None and age >= config.ESCALATION_SECONDS:
-                        o["escalated_at"] = now
-                        events.append({**base, "type": "escalation", "age": round(age)})
-                if age > expire_after and o["escalated_at"] is not None:
+                if (o["notified_at"] is None and age >= config.NOTIFY_AFTER_SECONDS
+                        and not self._resolving(key, now)):
+                    due_zones.add(zone_id)
+                if age > config.EXPIRE_SECONDS:
                     del self.open[key]
-                    events.append({**base, "type": "expired"})
+                    if self.miss_since.get(key) is not None:
+                        self.miss_since[key] = now  # still missing: a fresh 20 s / 30 s cycle
+                    self.ai_hits[key] = 0
+                    events.append({"type": "expired", "zone_id": zone_id, "gear": gear,
+                                   "timestamp": o["timestamp"], "meta": o["meta"]})
+
+            for zone_id in sorted(due_zones):
+                items = []
+                for (z, gear), o in self.open.items():
+                    if z != zone_id or o["notified_at"] is not None or self._resolving((z, gear), now):
+                        continue
+                    o["notified_at"] = now
+                    items.append({"gear": gear, "timestamp": o["timestamp"],
+                                  "age": round(self._active_age(o, now)), "meta": o["meta"]})
+                if items:
+                    items.sort(key=lambda i: -i["age"])
+                    events.append({"type": "notify", "zone_id": zone_id, "items": items,
+                                   "meta": items[0]["meta"]})
         return events
 
-    def forget(self, zone_id, gear):
-        """Undo an open violation (used when saving it failed)."""
+    def group_timestamp(self, zone_id, exclude=None):
+        """Record id of the incident currently open in this zone (via any other open item)."""
+        with self.lock:
+            for (z, g), o in self.open.items():
+                if z == zone_id and g != exclude:
+                    return o["timestamp"]
+        return None
+
+    def relink(self, zone_id, gear, timestamp, notified, logged_at):
+        """Point the open incident at an existing record (found in the database after a
+        restart). Keeps its timestamp and, if it was already notified, never notifies again."""
+        with self.lock:
+            o = self.open.get((zone_id, gear))
+            if o is None:
+                return
+            o["timestamp"] = timestamp
+            o["logged_at"] = min(o["logged_at"], logged_at)
+            if notified and o["notified_at"] is None:
+                o["notified_at"] = o["logged_at"]
+
+    def forget(self, zone_id, gear, restart_clock=False, now=None):
+        """Drop an open violation. Used when saving it failed (retry on the next streak),
+        and when a manager resolves it by hand: restart_clock=True starts a fresh
+        voice/notify cycle so a worker who is still non-compliant isn't re-logged instantly."""
+        now = time.time() if now is None else now
         with self.lock:
             self.open.pop((zone_id, gear), None)
+            if restart_clock:
+                key = (zone_id, gear)
+                self.ai_hits[key] = 0
+                if self.miss_since.get(key) is not None:
+                    self.miss_since[key] = now
 
     # ---------------- UI ----------------
     def status(self, zone_id, required, now=None):
@@ -173,17 +257,22 @@ class Tracker:
             for gear in required:
                 key = (zone_id, gear)
                 o = self.open.get(key)
+                streak = self.miss_since.get(key)
                 ok_since = self.ok_since.get(key)
-                s = {"miss_streak": self.miss.get(key, 0), "open": o is not None}
+                s = {"open": o is not None,
+                     "detector": config.detector(gear),
+                     "missing_for": round(now - streak) if streak is not None and o is None else 0,
+                     "voice_after": config.VOICE_AFTER_SECONDS,
+                     "notify_after": config.NOTIFY_AFTER_SECONDS}
+                if config.is_ai(gear):
+                    s.update(checks=self.ai_hits.get(key, 0), checks_needed=config.AI_DEBOUNCE_CHECKS)
                 if o:
                     age = self._active_age(o, now)
                     s.update(
                         paused=self._stale(zone_id, now),
-                        voice_count=o["voice_count"],
-                        emailed=o["emailed_at"] is not None,
-                        email_in=max(0, round(config.ALERT_GRACE_SECONDS - age)),
-                        escalated=o["escalated_at"] is not None,
-                        escalation_in=max(0, round(config.ESCALATION_SECONDS - age)),
+                        missing_for=round(age),
+                        notified=o["notified_at"] is not None,
+                        notify_in=max(0, round(config.NOTIFY_AFTER_SECONDS - age)),
                         resolving=round(now - ok_since, 1) if ok_since is not None else None,
                         resolve_seconds=config.RESOLVE_SECONDS,
                     )

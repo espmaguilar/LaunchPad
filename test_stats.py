@@ -35,7 +35,7 @@ assert st["by_hour"][11] == 1 and st["by_hour"][10] == 1 and st["by_hour"][9] ==
 assert st["week"]["violations"] == 5, st["week"]     # excludes Oct 20
 assert st["riskiest_zone"]["zone"] == "Clean Room" and st["riskiest_zone"]["violations"] == 3
 assert st["week"]["avg_seconds_to_fix"] == 30
-assert st["by_zone"]["Chem Lab"] == {"FACE_COVER": 1, "HAND_COVER": 1, "HEAD_COVER": 0}
+assert st["by_zone"]["Chem Lab"] == {"FACE_COVER": 1, "HAND_COVER": 1, "HEAD_COVER": 0, "AI_VISION": 0}
 assert "Construction Site" not in st["by_zone"]
 assert st["includes_sample"] is True
 
@@ -53,3 +53,22 @@ assert "$33,100" in r["summary"] and "will be fined" not in str(r).lower(), r["s
 assert reports.weekly_report(empty)["summary"].startswith("No PPE violations")
 
 print("all stats checks passed")
+
+# Dashboard ranges
+import stats as _s
+from datetime import datetime as _dt, timezone as _tz
+_now = _dt(2026, 11, 7, 18, 0, tzinfo=_tz.utc)
+_items = [
+    {"timestamp": "2026-11-07T15:00:00.000Z", "zone_name": "Chem Lab", "gear_type": "HAND_COVER", "fine": 18500, "status": "OPEN"},
+    {"timestamp": "2026-11-06T15:00:00.000Z", "zone_name": "Chem Lab", "gear_type": "AI:no-phones", "gear_label": "No phones",
+     "fine": 500, "status": "RESOLVED", "seconds_to_fix": 20},
+    {"timestamp": "2026-10-29T15:00:00.000Z", "zone_name": "Clean Room", "gear_type": "FACE_COVER", "fine": 16550, "status": "RESOLVED", "seconds_to_fix": 40},
+]
+_d = _s.dashboard(_items, 0, 7, now=_now)
+assert _d["current"]["violations"] == 2 and _d["previous"]["violations"] == 1, _d
+assert _d["current"]["fine_exposure"] == 18500 and _d["current"]["fines_avoided"] == 500
+assert _d["current"]["resolution_rate"] == 50.0 and _d["current"]["avg_seconds_to_fix"] == 20
+assert len(_d["daily"]) == 7 and _d["daily"][-1]["exposure"] == 18500 and _d["daily"][-2]["avoided"] == 500
+assert {i["label"] for i in _d["by_issue"]} == {"gloves", "No phones"}
+assert _s.dashboard(_items, 0, 30, now=_now)["current"]["violations"] == 3
+print("all dashboard checks passed")

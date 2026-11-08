@@ -21,6 +21,11 @@ cases = {
     "Face shield": "UNMONITORED",          # not a mask: must not map to FACE_COVER
     "High-visibility safety vest": "UNMONITORED",
     "Steel-toe safety boots": "UNMONITORED",
+    "Workers must wear nitrile gloves": "HAND_COVER",        # "wear" contains "ear": must not hit ear protection
+    "Wear a hard hat at all times": "HEAD_COVER",
+    "Hearing protection (earmuffs)": "UNMONITORED",
+    "No phones in use": "UNMONITORED",                        # conduct rule -> AI vision
+    "Do not show the number two with your fingers": "UNMONITORED",
 }
 for item, want in cases.items():
     assert policy.map_gear(item) == want, (item, policy.map_gear(item))

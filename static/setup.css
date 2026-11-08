@@ -19,7 +19,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .text-preview { margin: 8px 0 12px; font-size: 13px; color: var(--muted); }
 .text-preview pre { white-space: pre-wrap; background: #0b0d11; padding: 10px; border-radius: 6px; max-height: 220px; overflow: auto; }
 .legend { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
-.pill-cam, .pill-off { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.pill-cam, .pill-off, .pill-ai { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
 .pill-cam { background: rgba(56,189,248,.15); color: var(--accent); }
 .pill-off { background: #262b36; color: var(--muted); }
 
@@ -46,3 +46,12 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .icon-btn:hover { color: var(--bad); }
 .link-btn { background: transparent; color: var(--accent); border: none; padding: 6px 0; font-weight: 500; }
 .check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.pill-ai { background: rgba(201,133,0,.18); color: #f0c060; }
+.rule-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 10px; }
+.rule-form .field { min-width: 140px; }
+.rule-form .field.grow { flex: 1 1 260px; }
+.rule-form select { background: #0b0d11; color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 9px; font-size: 13px; }
+.rule-list { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.rule-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.rule-list .icon-btn { margin-left: auto; }

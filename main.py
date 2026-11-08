@@ -13,11 +13,15 @@ from pydantic import BaseModel
 
 import config
 import incidents
+import notify
 import policy
 import ppe
+import records
 import reports
+import settings
 import stats
 import store
+import vision
 import voice
 from tracker import tracker
 
@@ -26,9 +30,10 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024  # Rekognition limit for raw bytes
 
 @asynccontextmanager
 async def lifespan(app):
-    # One escalation thread per server process. With --reload the old process is
+    # One notification thread per server process. With --reload the old process is
     # killed before the new one starts, so threads never double up.
     # (Don't run with --workers > 1: each worker would have its own tracker.)
+    settings.init()  # apply saved Settings-page values onto config
     incidents.start_ticker()
     yield
     incidents.stop_ticker()
@@ -97,10 +102,11 @@ def health():
         "demo_mode": config.DEMO_MODE,
         "min_person_area": config.MIN_PERSON_AREA,
         "timers": {
-            "grace": config.ALERT_GRACE_SECONDS,
-            "escalation": config.ESCALATION_SECONDS,
+            "voice_after": config.VOICE_AFTER_SECONDS,
+            "notify_after": config.NOTIFY_AFTER_SECONDS,
             "resolve": config.RESOLVE_SECONDS,
         },
+        "notify_channel": notify.channel_label(),
         "region": config.AWS_REGION,
         "missing_settings": missing,
     }
@@ -109,9 +115,70 @@ def health():
 @app.get("/api/zones")
 def zones():
     try:
-        return list_zones()
+        return [{**z, "ai_rules": config.ai_rules(z)} for z in list_zones()]
     except (ClientError, BotoCoreError) as e:
         raise aws_error(e)
+
+
+def tracked_keys(zone):
+    """Rekognition gear types + AI-vision rule keys, with labels for the UI."""
+    keys = list(zone["required"]) + [r["key"] for r in config.ai_rules(zone)]
+    return keys, {k: config.gear_label(k, zone) for k in keys}
+
+
+def tracking_for(zone):
+    keys, labels = tracked_keys(zone)
+    st = tracker.status(zone["zone_id"], keys)
+    for k, v in st.items():
+        v["label"] = labels[k]
+    return st
+
+
+class RuleRequest(BaseModel):
+    item: str
+    fine: int | None = None
+    severity: str | None = None
+    rule: str | None = None
+
+
+@app.post("/api/zones/{zone_id}/rules")
+def add_rule(zone_id: str, req: RuleRequest):
+    """Add a free-text AI-vision rule to a live zone (no PDF needed)."""
+    item = req.item.strip()
+    if not 3 <= len(item) <= 120:
+        raise HTTPException(422, "Describe the rule in 3-120 characters, e.g. \"No phones\".")
+    if req.fine is not None and not 0 <= req.fine <= 1_000_000:
+        raise HTTPException(422, "Fine must be between $0 and $1,000,000.")
+    try:
+        zone = get_zone(zone_id)
+        if zone is None:
+            raise HTTPException(404, f"unknown zone '{zone_id}'")
+        key = config.ai_key(item)
+        if any(r["key"] == key for r in config.ai_rules(zone)):
+            raise HTTPException(409, f'"{item}" is already a rule in {zone["name"]}.')
+        sev = req.severity if req.severity in policy.SEVERITIES else None
+        zone = {**zone, "unmonitored": list(zone.get("unmonitored") or []) + [{
+            "item": item, "rule": (req.rule or "").strip() or "Custom rule", "severity": sev,
+            "fine": req.fine, "source": "custom" if req.fine is not None else None}]}
+        save_zones([zone], replace=False)
+    except (ClientError, BotoCoreError) as e:
+        raise aws_error(e)
+    return {**zone, "ai_rules": config.ai_rules(zone)}
+
+
+@app.delete("/api/zones/{zone_id}/rules/{key}")
+def delete_rule(zone_id: str, key: str):
+    try:
+        zone = get_zone(zone_id)
+        if zone is None:
+            raise HTTPException(404, f"unknown zone '{zone_id}'")
+        kept = [u for u in zone.get("unmonitored") or [] if config.ai_key(u.get("item", "")) != key]
+        zone = {**zone, "unmonitored": kept}
+        save_zones([zone], replace=False)
+    except (ClientError, BotoCoreError) as e:
+        raise aws_error(e)
+    tracker.forget(zone_id, key)
+    return {**zone, "ai_rules": config.ai_rules(zone)}
 
 
 class AnalyzeRequest(BaseModel):
@@ -141,11 +208,12 @@ def analyze(req: AnalyzeRequest):
         raise aws_error(e)
 
     # Debounce / cooldown / resolve, then save + alert. Failures come back as events.
-    meta = {"zone_name": zone["name"], "alert_email": zone.get("alert_email", ""), "rules": zone.get("rules"),
-            "people": max(1, len([p for p in result["persons"] if p["missing"]]))}
+    meta = incidents.zone_meta(zone, people=max(1, len([p for p in result["persons"] if p["missing"]])))
     raw_events = tracker.update(zone["zone_id"], required, result["persons"], meta=meta)
     events = incidents.process(raw_events, zone, image_bytes, result["persons"])
-    events += incidents.drain_ui()  # emails/escalations fired by the background thread
+    # AI-vision rules: background Bedrock check every AI_CHECK_SECONDS (results arrive via drain_ui)
+    vision.maybe_schedule(zone, image_bytes, incidents.on_vision_result)
+    events += incidents.drain_ui()  # supervisor notifications fired by the background thread
 
     return {
         "zone_id": zone["zone_id"],
@@ -154,7 +222,8 @@ def analyze(req: AnalyzeRequest):
         "mock": config.MOCK_MODE,
         **result,
         "events": events,
-        "tracking": tracker.status(zone["zone_id"], required),
+        "tracking": tracking_for(zone),
+        "ai_vision": vision.last(zone["zone_id"]),
     }
 
 
@@ -167,22 +236,25 @@ def tracking(zone_id: str):
         raise aws_error(e)
     if zone is None:
         raise HTTPException(404, f"unknown zone '{zone_id}'")
-    return {"tracking": tracker.status(zone_id, list(zone["required"])), "events": incidents.drain_ui()}
+    return {"tracking": tracking_for(zone), "events": incidents.drain_ui(), "ai_vision": vision.last(zone_id)}
 
 
-@app.get("/api/voice/{zone_id}/{gear}")
-def voice_warning(zone_id: str, gear: str):
-    """Tier-1 voice warning MP3 (Polly, cached). 503 -> browser uses speechSynthesis."""
-    if gear not in config.GEAR_TYPES:
-        raise HTTPException(404, "unknown gear")
+@app.get("/api/voice/{zone_id}/{gears}")
+def voice_warning(zone_id: str, gears: str):
+    """Voice warning MP3 for one zone; gears is comma-separated (one combined phrase).
+    Polly, cached. 503 -> browser uses speechSynthesis."""
+    gear_list = [g for g in gears.split(",") if g]
     try:
         zone = get_zone(zone_id)
     except (ClientError, BotoCoreError) as e:
         raise aws_error(e)
     if zone is None:
         raise HTTPException(404, f"unknown zone '{zone_id}'")
+    valid = set(config.GEAR_TYPES) | {r["key"] for r in config.ai_rules(zone)}
+    if not gear_list or any(g not in valid for g in gear_list):
+        raise HTTPException(404, "unknown gear or rule")
     try:
-        audio, _ = voice.mp3_for(zone["name"], gear)
+        audio, _ = voice.mp3_for(zone["name"], gear_list, zone)
     except voice.VoiceUnavailable as e:
         raise HTTPException(503, f"voice unavailable: {e}")
     return Response(audio, media_type="audio/mpeg", headers={"Cache-Control": "max-age=86400"})
@@ -259,6 +331,71 @@ def violation_image(zone_id: str, timestamp: str):
     return RedirectResponse(loc)
 
 
+@app.get("/api/dashboard")
+def dashboard(days: int = 7, tz_offset: int = 0):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, "days must be 7, 30 or 90")
+    try:
+        items = store.list_violations(None)
+    except (ClientError, BotoCoreError) as e:
+        raise aws_error(e)
+    return {**stats.dashboard(items, tz_offset, days), "today": stats.compute(items, tz_offset)["today"]}
+
+
+@app.post("/api/violations/{zone_id}/{timestamp}/resolve")
+def resolve_violation(zone_id: str, timestamp: str):
+    """Manager marks an incident resolved from the Incidents page."""
+    try:
+        item = store.get_violation(zone_id, timestamp)
+        if item is None:
+            raise HTTPException(404, "violation not found")
+        if item.get("status") == "RESOLVED":
+            return item
+    except (ClientError, BotoCoreError) as e:
+        raise aws_error(e)
+    err = incidents.resolve_all(zone_id, timestamp)
+    if err:
+        raise HTTPException(502, f"Could not resolve: {err}")
+    for it in records.items_of(item):  # still missing -> fresh 20 s / 30 s cycle per item
+        tracker.forget(zone_id, it["gear"], restart_clock=True)
+    return store.get_violation(zone_id, timestamp)
+
+
+class ZoneUpdate(BaseModel):
+    alert_email: str
+
+
+@app.put("/api/zones/{zone_id}")
+def update_zone(zone_id: str, req: ZoneUpdate):
+    email = req.alert_email.strip()
+    if email and ("@" not in email or " " in email or len(email) > 254):
+        raise HTTPException(422, "Enter a valid email address.")
+    try:
+        zone = get_zone(zone_id)
+        if zone is None:
+            raise HTTPException(404, f"unknown zone '{zone_id}'")
+        zone = {**zone, "alert_email": email}
+        save_zones([zone], replace=False)
+    except (ClientError, BotoCoreError) as e:
+        raise aws_error(e)
+    return {**zone, "ai_rules": config.ai_rules(zone)}
+
+
+@app.get("/api/settings")
+def get_settings():
+    return {"settings": settings.current(), "presets": settings.PRESETS, "polly_voices": settings.POLLY_VOICES,
+            "notify_channel": notify.channel_label(), "sns_topic": bool(config.SNS_TOPIC_ARN),
+            "alert_email": config.ALERT_EMAIL}
+
+
+@app.put("/api/settings")
+def put_settings(body: dict):
+    try:
+        return {"settings": settings.save(body)}
+    except settings.SettingsError as e:
+        raise HTTPException(422, str(e))
+
+
 # ---------- policy ingestion ----------
 class PolicyUpload(BaseModel):
     filename: str
@@ -307,18 +444,44 @@ class PolicyApprove(BaseModel):
 
 @app.post("/api/policy/approve")
 def policy_approve(req: PolicyApprove):
+    """Publish reviewed zones. A draft zone with target_zone_id is MERGED into that existing
+    zone (its rules are added; the zone keeps its name, other rules and supervisor)."""
     try:
-        zones = policy.validate_approved(req.zones)
+        zones = policy.validate_approved(req.zones)  # same order as req.zones
     except policy.PolicyError as e:
         raise HTTPException(422, str(e))
     approved_at = utc_now()
-    for z in zones:
-        z.update(policy_key=req.policy_key, approved_at=approved_at)
+    out = []
     try:
-        save_zones(zones, req.replace_existing)
+        for raw, z in zip(req.zones, zones):
+            target = str((raw or {}).get("target_zone_id") or "").strip()
+            if target:
+                existing = get_zone(target)
+                if existing is None:
+                    raise HTTPException(422, f'Zone "{target}" no longer exists - pick another zone to add rules to.')
+                z = merge_zone(existing, z)
+            z.update(policy_key=req.policy_key, approved_at=approved_at)
+            out.append(z)
+        ids = [z["zone_id"] for z in out]
+        if len(ids) != len(set(ids)):
+            raise HTTPException(422, "Two zones in this policy publish to the same zone - merge them or rename one.")
+        save_zones(out, req.replace_existing)
     except (ClientError, BotoCoreError) as e:
         raise aws_error(e)
-    return {"ok": True, "zones": zones}
+    return {"ok": True, "zones": [{**z, "ai_rules": config.ai_rules(z)} for z in out]}
+
+
+def merge_zone(existing, new):
+    """Add a policy zone's rules to an existing zone without dropping what it already checks."""
+    have_ai = {config.ai_key(u.get("item", "")) for u in existing.get("unmonitored") or []}
+    return {
+        **existing,
+        "required": list(existing.get("required") or []) + [g for g in new["required"] if g not in (existing.get("required") or [])],
+        "rules": {**(existing.get("rules") or {}), **(new.get("rules") or {})},
+        "unmonitored": list(existing.get("unmonitored") or [])
+        + [u for u in new.get("unmonitored") or [] if config.ai_key(u.get("item", "")) not in have_ai],
+        "alert_email": existing.get("alert_email") or new.get("alert_email", ""),
+    }
 
 
 def utc_now():
@@ -328,11 +491,20 @@ def utc_now():
     return utc_timestamp(time.time())
 
 
+SAMPLE_POLICIES = {  # name -> (file in demo/, script that generates it)
+    "brightwater": ("sample_safety_policy.pdf", "demo/make_sample_policy.py"),
+    "new_rules": ("new_rules.pdf", "demo/make_new_rules.py"),
+}
+
+
 @app.get("/api/policy/sample")
-def policy_sample():
-    path = Path(__file__).parent / "demo" / "sample_safety_policy.pdf"
+def policy_sample(name: str = "brightwater"):
+    if name not in SAMPLE_POLICIES:
+        raise HTTPException(404, "unknown sample policy")
+    file, script = SAMPLE_POLICIES[name]
+    path = Path(__file__).parent / "demo" / file
     if not path.exists():
-        raise HTTPException(404, "run: python demo/make_sample_policy.py")
+        raise HTTPException(404, f"run: python {script}")
     return FileResponse(path, media_type="application/pdf")
 
 
@@ -341,9 +513,22 @@ def setup_page():
     return FileResponse(STATIC_DIR / "setup.html")
 
 
+APP_DIR = STATIC_DIR / "app"  # React UI built from frontend/ (npm run build)
+
+
 @app.get("/")
 def index():
+    """The SafeSight app (React build). Falls back to the classic page if it isn't built."""
+    if (APP_DIR / "index.html").exists():
+        return FileResponse(APP_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/classic")
+def classic():
+    """Original single-page UI, kept as a backup for demos."""
     return FileResponse(STATIC_DIR / "index.html")
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/app", StaticFiles(directory=APP_DIR, check_dir=False), name="app")

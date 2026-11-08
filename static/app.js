@@ -5,7 +5,6 @@ const SNAPSHOT_MAX_WIDTH = 640; // downscale before upload: smaller payload, fas
 
 const GEAR_LABELS = { FACE_COVER: "face cover", HAND_COVER: "gloves", HEAD_COVER: "head protection" };
 const COLORS = { ok: "#22c55e", violation: "#ef4444", unknown: "#f59e0b" };
-const DEBOUNCE_FRAMES = 3; // keep in sync with config.py (display only)
 const money = (n) => "$" + Number(n).toLocaleString();
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +25,11 @@ function escHtml(v) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 const gearList = (gears) => gears.map((g) => GEAR_LABELS[g] || g).join(", ");
+const isAi = (g) => String(g).startsWith("AI:");
+const itemLabel = (it) => it.gear_label || GEAR_LABELS[it.gear_type] || it.gear_type;
+const detectorBadge = (g) => isAi(g)
+  ? `<span class="det ai" title="Checked by a Bedrock vision model every 10 s">AI vision</span>`
+  : `<span class="det rek" title="Checked by Amazon Rekognition PPE detection every frame">Rekognition</span>`;
 
 function showError(msg) {
   $("errorBanner").textContent = msg;
@@ -55,6 +59,7 @@ async function loadZones() {
     const health = await api("/api/health");
     $("mockBadge").classList.toggle("hidden", !health.mock_mode);
     $("demoBadge").classList.toggle("hidden", !health.demo_mode);
+    notifyChannel = health.notify_channel || "email";
     const prev = $("zoneSelect").value;
     zones = await api("/api/zones");
     $("zoneSelect").innerHTML = zones
@@ -74,11 +79,14 @@ function renderRequired() {
   const cam = z.required.map((g) => {
     const r = (z.rules || {})[g] || {};
     const tip = [r.item, r.rule, r.fine != null ? money(r.fine) : null].filter(Boolean).join(" · ");
-    return `<span class="chip" title="${esc(tip)}">${esc(GEAR_LABELS[g] || g)}</span>`;
+    return `<span class="chip rek" title="Rekognition · ${esc(tip)}">${esc(GEAR_LABELS[g] || g)}</span>`;
   });
-  const off = (z.unmonitored || []).map((u) =>
-    `<span class="chip off" title="Required by policy, not camera-monitored">${esc(u.item)}</span>`);
-  $("requiredGear").innerHTML = cam.concat(off).join("") || `<span class="muted">No camera-checked gear</span>`;
+  const ai = (z.ai_rules || []).map((r) => {
+    const tip = ["AI vision (Bedrock)", r.rule, r.fine != null ? money(r.fine) : null].filter(Boolean).join(" · ");
+    return `<span class="chip ai" title="${esc(tip)}">${esc(r.item)}</span>`;
+  });
+  $("requiredGear").innerHTML = cam.concat(ai).join("") || `<span class="muted">No rules for this zone</span>`;
+  $("chipLegend").classList.toggle("hidden", !cam.length && !ai.length);
 }
 
 // ---------- camera ----------
@@ -142,6 +150,7 @@ async function captureAndAnalyze() {
     drawBoxes();
     renderStatus();
     renderTracking(result.tracking);
+    renderAiVision(result.ai_vision);
     (result.events || []).forEach(showEvent);
     if (result.events?.length) { loadIncidents(); loadStats(); }
     $("frameInfo").textContent =
@@ -232,9 +241,11 @@ function renderStatus() {
 }
 
 // ---------- smart logic display ----------
-function dots(n, total) {
-  const k = Math.min(n, total);
-  return "●".repeat(k) + "○".repeat(total - k);
+let notifyChannel = "email"; // set from /api/health
+
+function bar(value, total) {
+  const pct = Math.min(100, (100 * value) / total);
+  return `<div class="progress"><i style="width:${pct}%"></i></div>`;
 }
 
 function renderTracking(tracking) {
@@ -244,27 +255,45 @@ function renderTracking(tracking) {
     .map(([gear, t]) => {
       const pill = t.open ? `<span class="pill open">OPEN</span>` : `<span class="pill clear">CLEAR</span>`;
       let body;
-      if (!t.open) {
-        body = row("next", `Missing <span class="dots">${dots(t.miss_streak, DEBOUNCE_FRAMES)}</span>`,
-                   `voice warning at ${DEBOUNCE_FRAMES}`);
+      if (!t.open && isAi(gear)) {
+        body = t.checks > 0
+          ? row("next", `Flagged on ${t.checks}/${t.checks_needed} checks`, "🔊 voice when confirmed") + bar(t.checks, t.checks_needed)
+          : row("next", "No violation seen", `needs ${t.checks_needed} checks in a row`);
+      } else if (!t.open) {
+        body = t.missing_for > 0
+          ? row("next", `Missing ${t.missing_for}s`, `🔊 voice at ${t.voice_after}s`) + bar(t.missing_for, t.voice_after)
+          : row("next", "Compliant", `🔊 voice after ${t.voice_after}s missing`);
       } else {
-        const lines = [row("done", `🔊 Warned${t.voice_count > 1 ? ` ×${t.voice_count}` : ""}`)];
+        const lines = [row("done", `🔊 Voice warning played`, `${isAi(gear) ? "flagged" : "missing"} ${t.missing_for}s`)];
         if (t.paused) lines.push(row("paused", "⏸ Camera offline", "timers paused"));
-        lines.push(t.emailed ? row("done", "📧 Supervisor emailed")
-          : row("next", t.resolving != null ? "📧 Email held" : `📧 Email in ${t.email_in}s`,
-                t.resolving != null ? "resolving" : ""));
-        lines.push(t.escalated ? row("done", "🚨 Escalated")
-          : row("next", `🚨 Escalation in ${t.escalation_in}s`));
+        const icon = notifyChannel === "SMS" ? "📱" : "📧";
+        lines.push(t.notified ? row("done", `${icon} Supervisor notified (${notifyChannel})`)
+          : row("next", t.resolving != null ? `${icon} Notification held` : `${icon} Supervisor notified in ${t.notify_in}s`,
+                t.resolving != null ? "resolving" : `at ${t.notify_after}s`));
         if (t.resolving != null) {
           const done = Math.min(t.resolving, t.resolve_seconds);
-          lines.push(row("done", `Resolving ${Math.floor(done)}/${t.resolve_seconds}s`) +
-            `<div class="progress"><i style="width:${(100 * done) / t.resolve_seconds}%"></i></div>`);
+          lines.push(row("done", `Resolving ${Math.floor(done)}/${t.resolve_seconds}s`) + bar(done, t.resolve_seconds));
         }
         body = lines.join("");
       }
-      return `<li><div class="gear">${GEAR_LABELS[gear] || gear} ${pill}</div>${body}</li>`;
+      return `<li><div class="gear"><span class="label">${esc(t.label || GEAR_LABELS[gear] || gear)}</span>${detectorBadge(gear)}${pill}</div>${body}</li>`;
     })
     .join("");
+}
+
+function renderAiVision(v) {
+  const box = $("aiVision");
+  const z = currentZone();
+  if (!z || !(z.ai_rules || []).length) { box.innerHTML = `<p class="muted small">No AI-vision rules for this zone. Add one on <a href="/setup">Policy setup</a>.</p>`; return; }
+  if (!v) { box.innerHTML = `<p class="muted small">First check runs within 10 s of starting the camera.</p>`; return; }
+  const verdict = (r) => r.violated === true ? `<span class="verdict bad">violated</span>`
+    : r.violated === false ? `<span class="verdict ok">ok</span>` : `<span class="verdict unsure">can't tell</span>`;
+  box.innerHTML =
+    `<p class="muted small">${esc(v.model)} · checked ${v.age}s ago</p>` +
+    (v.error ? `<p class="ai-error">Check failed: ${esc(v.error)}</p>` : "") +
+    `<ul class="ai-results">${(v.results || []).map((r) => `<li><div><b>${esc(r.item)}</b> ${verdict(r)}` +
+      `${r.confidence ? ` <span class="muted">${Math.round(r.confidence * 100)}%</span>` : ""}</div>` +
+      `<div class="sub">${esc(r.reason || "")}</div></li>`).join("")}</ul>`;
 }
 
 // ---------- voice (tier 1) ----------
@@ -313,11 +342,50 @@ function speakFallback(text) {
   window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 }
 
+// One generalized announcement per zone, never one per item or per person.
+// Violations that arrive within VOICE_BATCH_MS are merged into one phrase
+// ("gloves and face cover"); a zone speaks at most once per VOICE_COOLDOWN_MS -
+// items that show up during the cooldown are announced together right after it.
+const VOICE_BATCH_MS = 2500;
+const VOICE_COOLDOWN_MS = 15000;
+const GEAR_ORDER = ["FACE_COVER", "HAND_COVER", "HEAD_COVER"]; // same order as config.GEAR_TYPES
+const voiceQueue = {}; // zone_id -> { zoneName, gears: Set, timer, lastPlayed }
+
+function joinLabels(gears) {
+  const labels = GEAR_ORDER.filter((g) => gears.includes(g)).map((g) => GEAR_LABELS[g] || g);
+  return labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
+}
+
+function voiceText(zoneName, gears, labels) {
+  // Same text as voice.phrase() on the server.
+  const ppe = gears.filter((g) => !isAi(g));
+  const ai = gears.filter(isAi).map((g) => (labels[g] || g).replace(/\.$/, ""));
+  const parts = ppe.length ? [`Attention: ${joinLabels(ppe)} required in the ${zoneName}.`] : [];
+  if (ai.length) parts.push(`${ppe.length ? "" : `Attention, ${zoneName}. `}Safety rule${ai.length > 1 ? "s" : ""}: ${ai.join("; ")}.`);
+  return parts.join(" ");
+}
+
 function playVoice(ev) {
-  if (muted) return;
-  const text = `Attention: ${ev.gear_label} required in the ${ev.zone_name}.`; // same phrase as config.VOICE_TEXT
+  const q = (voiceQueue[ev.zone_id] ||= { gears: new Set(), labels: {}, timer: null, lastPlayed: 0 });
+  q.zoneName = ev.zone_name;
+  q.gears.add(ev.gear);
+  q.labels[ev.gear] = ev.gear_label;
+  if (q.timer) return; // already scheduled: this item joins the same announcement
+  const delay = Math.max(VOICE_BATCH_MS, q.lastPlayed + VOICE_COOLDOWN_MS - Date.now());
+  q.timer = setTimeout(() => speakZone(ev.zone_id), delay);
+}
+
+function speakZone(zoneId) {
+  const q = voiceQueue[zoneId];
+  const gears = [...q.gears];
+  q.gears.clear();
+  q.timer = null;
+  q.lastPlayed = Date.now();
+  if (muted || !gears.length) return;
+  const ordered = GEAR_ORDER.filter((g) => gears.includes(g)).concat(gears.filter(isAi).sort());
+  const text = voiceText(q.zoneName, ordered, q.labels);
   voiceAudio.onerror = () => speakFallback(text); // Polly failed / mock mode -> browser speech
-  voiceAudio.src = `/api/voice/${encodeURIComponent(ev.zone_id)}/${encodeURIComponent(ev.gear)}`;
+  voiceAudio.src = `/api/voice/${encodeURIComponent(zoneId)}/${ordered.map(encodeURIComponent).join(",")}`;
   voiceAudio.play().catch(() => speakFallback(text));
 }
 
@@ -335,19 +403,16 @@ function toast(kind, title, sub) {
 function showEvent(ev) {
   if (ev.type === "violation") {
     playVoice(ev);
-    toast("violation", `${ev.zone_name}: missing ${ev.gear_label}`,
-          `🔊 Voice warning · potential fine exposure ${money(ev.fine)}`);
-  } else if (ev.type === "voice_repeat") {
-    playVoice(ev);
-  } else if (ev.type === "email") {
-    toast("email", `📧 Supervisor emailed: ${ev.zone_name}`,
-          ev.sent ? `Missing ${ev.gear_label} not fixed after ${ev.age}s` : `Email failed: ${ev.alert_error}`);
-  } else if (ev.type === "escalation") {
-    toast("escalation", `🚨 Escalated: ${ev.zone_name}`,
-          ev.sent ? `Missing ${ev.gear_label} unresolved for ${ev.age}s` : `Email failed: ${ev.alert_error}`);
+    toast("violation", isAi(ev.gear) ? `${ev.zone_name}: ${ev.gear_label}` : `${ev.zone_name}: missing ${ev.gear_label}`,
+          `🔊 Voice warning · ${ev.detector || "Rekognition"} · potential fine exposure ${money(ev.fine)}`);
+  } else if (ev.type === "notify") {
+    const icon = ev.channel === "SMS" ? "📱" : "📧";
+    toast("email", `${icon} Supervisor notified: ${ev.zone_name}`,
+          ev.sent ? `Missing ${ev.gear_label} for ${ev.age}s · ${money(ev.fine)} exposure`
+                  : `Notification failed: ${ev.alert_error}`);
   } else if (ev.type === "resolved") {
     toast("resolved", `Resolved: ${ev.gear_label} in ${ev.zone_name}`,
-          `Fixed in ${ev.seconds_to_fix}s${ev.emails_sent ? "" : " · no email needed"} · ` +
+          `Fixed in ${ev.seconds_to_fix}s${ev.notified ? "" : " · supervisor not needed"} · ` +
           `${money(ev.fine)} potential fine avoided`);
   } else if (ev.type === "fixed_late") {
     toast("expired", `Fixed late: ${ev.gear_label} in ${ev.zone_name}`,
@@ -390,7 +455,7 @@ async function loadIncidents() {
     return `<tr class="${isNew ? "flash" : ""}" data-zone="${esc(it.zone_id)}" data-ts="${esc(it.timestamp)}">
       <td>${esc(fmtTime(it.timestamp))}</td>
       <td>${esc(it.zone_name)}</td>
-      <td>${esc(GEAR_LABELS[it.gear_type] || it.gear_type)}</td>
+      <td>${esc(itemLabel(it))} ${detectorBadge(it.gear_type)}</td>
       <td>${esc(it.osha_rule)}</td>
       <td class="num">${money(it.fine)}</td>
       <td><span class="status ${esc(it.status)}">${esc(it.status)}</span></td>
@@ -418,21 +483,23 @@ async function openIncident(zoneId, ts) {
     return;
   }
   const rule = it.osha_rule || "";
-  $("modalTitle").textContent = `${it.zone_name}: missing ${GEAR_LABELS[it.gear_type] || it.gear_type}`;
+  const ai = isAi(it.gear_type);
+  $("modalTitle").textContent = ai ? `${it.zone_name}: ${itemLabel(it)}` : `${it.zone_name}: missing ${itemLabel(it)}`;
 
   const facts = [
     ["When", fmtTime(it.timestamp)],
     ["Where", it.zone_name],
-    ["What", `${it.people} ${it.people == 1 ? "person" : "people"} without ${GEAR_LABELS[it.gear_type] || it.gear_type}`],
+    ["What", ai ? `Rule broken: ${itemLabel(it)}${it.ai_reason ? ` (${it.ai_reason})` : ""}`
+               : `${it.people} ${it.people == 1 ? "person" : "people"} without ${itemLabel(it)}`],
+    ["Detected by", ai ? "AI vision (Amazon Bedrock)" : "Amazon Rekognition PPE"],
     ["Rule", rule],
     ["Severity", it.severity],
     ["Potential fine exposure", money(it.fine)],
     ["Status", it.status === "RESOLVED" ? `Resolved in ${it.seconds_to_fix}s (fine avoided)`
       : it.fixed_at ? `Fixed late, after ${it.seconds_to_fix}s (exposure stands)` : "Open"],
     ["Escalation", [
-      it.voice_warnings ? `voice warning${it.voice_warnings > 1 ? " ×" + it.voice_warnings : ""}` : null,
-      it.emails_sent >= 1 ? "supervisor emailed" : null,
-      it.emails_sent >= 2 ? "escalated" : null,
+      it.voice_warnings ? "voice warning" : null,
+      it.emails_sent >= 1 ? "supervisor notified" : null,
     ].filter(Boolean).join(" → ") || "—"],
   ];
   $("modalFacts").innerHTML = facts.map(([k, v]) => {
@@ -499,7 +566,9 @@ document.addEventListener("keydown", (e) => {
 // ---------- dashboard ----------
 // Gear colors: validated categorical palette (blue, orange, aqua) for the dark surface.
 // Red/green stay reserved for violation/compliant status.
-const GEAR_COLORS = { HAND_COVER: "#3987e5", FACE_COVER: "#d95926", HEAD_COVER: "#199e70" };
+// Validated categorical slots 1-4 (dark surface): blue, orange, aqua, yellow.
+const GEAR_COLORS = { HAND_COVER: "#3987e5", FACE_COVER: "#d95926", HEAD_COVER: "#199e70", AI_VISION: "#c98500" };
+const SERIES_LABELS = { ...GEAR_LABELS, AI_VISION: "AI-vision rules" };
 const SURFACE = "#0b0d11";
 const INK = "#c3c6d0", GRID = "#262b36";
 const tz = () => new Date().getTimezoneOffset();
@@ -544,7 +613,7 @@ function renderCharts(st) {
 
   const zones = Object.keys(st.by_zone);
   const datasets = Object.keys(GEAR_COLORS).map((g) => ({
-    label: GEAR_LABELS[g],
+    label: SERIES_LABELS[g],
     data: zones.map((z) => st.by_zone[z][g] || 0),
     backgroundColor: GEAR_COLORS[g],
     borderColor: SURFACE, borderWidth: { top: 2 }, borderSkipped: "bottom", // 2px gap between stacked segments
@@ -566,6 +635,7 @@ async function loadTracking() {
   try {
     const r = await api(`/api/tracking/${encodeURIComponent(zone)}`);
     renderTracking(r.tracking);
+    renderAiVision(r.ai_vision);
     r.events.forEach(showEvent);
   } catch (_) {}
 }
@@ -633,6 +703,7 @@ $("zoneSelect").addEventListener("change", () => {
   loadTracking();
   drawBoxes();
   renderRequired();
+  renderAiVision(null);
 });
 new ResizeObserver(resizeOverlay).observe(video);
 

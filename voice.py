@@ -1,4 +1,5 @@
-"""Tier-1 voice warnings via Amazon Polly, cached per (zone, gear) phrase.
+"""Voice warnings via Amazon Polly: ONE combined phrase per zone (all missing items),
+cached per phrase.
 
 Polly is called at most once per phrase: results are kept in memory and on disk
 (audio_cache/), so restarts don't re-synthesize. If Polly is unavailable the
@@ -20,13 +21,30 @@ class VoiceUnavailable(Exception):
     pass
 
 
-def phrase(zone_name, gear):
-    return config.VOICE_TEXT.format(gear=config.GEAR_LABELS.get(gear, gear), zone=zone_name)
+def join_labels(gears):
+    """["HAND_COVER", "FACE_COVER"] -> "gloves and face cover" (fixed order, no duplicates)."""
+    labels = [config.GEAR_LABELS.get(g, g) for g in config.GEAR_TYPES if g in gears]
+    return labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " and " + labels[-1]
 
 
-def mp3_for(zone_name, gear):
+def phrase(zone_name, gears, zone=None):
+    """One generalized message for everyone in the zone - no per-person announcements.
+    PPE: "Attention: gloves required in the Chem Lab."
+    AI rules are appended as reminders: "Safety rule: No phones."  (same text as app.js)"""
+    if isinstance(gears, str):
+        gears = [gears]
+    ppe = [g for g in gears if not config.is_ai(g)]
+    ai = [config.gear_label(g, zone) for g in gears if config.is_ai(g)]
+    parts = [config.VOICE_TEXT.format(gear=join_labels(ppe), zone=zone_name)] if ppe else []
+    if ai:
+        lead = "Safety rule" if len(ai) == 1 else "Safety rules"
+        parts.append(f"{'' if ppe else f'Attention, {zone_name}. '}{lead}: {'; '.join(a.rstrip('.') for a in ai)}.")
+    return " ".join(parts)
+
+
+def mp3_for(zone_name, gears, zone=None):
     """Return (mp3_bytes, text). Raises VoiceUnavailable if Polly can't be used."""
-    text = phrase(zone_name, gear)
+    text = phrase(zone_name, gears, zone)
     if config.MOCK_MODE:
         raise VoiceUnavailable("mock mode")
     key = hashlib.sha1(f"{config.POLLY_VOICE_ID}|{config.POLLY_ENGINE}|{text}".encode()).hexdigest()[:16]

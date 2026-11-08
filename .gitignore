@@ -8,3 +8,5 @@ test_images/*.png
 mock_data/
 .playwright-mcp/
 audio_cache/
+settings.json
+frontend/node_modules/

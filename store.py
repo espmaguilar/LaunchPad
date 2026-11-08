@@ -114,6 +114,25 @@ def send_alert(subject, message):
     sns.publish(TopicArn=config.SNS_TOPIC_ARN, Subject=subject[:100], Message=message)
 
 
+def find_open(zone_id, since_ts):
+    """Most recent still-OPEN incident in this zone logged at or after since_ts (ISO), or
+    None. Lets a restarted server re-attach to the ongoing incident instead of logging a
+    duplicate."""
+    if config.MOCK_MODE:
+        with _mock_lock:
+            items = [it for it in _mock_load() if it["zone_id"] == zone_id and it["timestamp"] >= since_ts]
+    else:
+        from boto3.dynamodb.conditions import Key
+
+        from aws_clients import violations_table
+
+        items = violations_table.query(
+            KeyConditionExpression=Key("zone_id").eq(zone_id) & Key("timestamp").gte(since_ts)
+        ).get("Items", [])
+    items = [it for it in items if it.get("status") == "OPEN" and not it.get("sample")]
+    return max(items, key=lambda it: it["timestamp"]) if items else None
+
+
 def list_violations(limit=50):
     """Most recent first. limit=None returns everything."""
     if config.MOCK_MODE:

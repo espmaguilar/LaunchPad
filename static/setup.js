@@ -5,7 +5,7 @@ const TYPES = [
   ["HAND_COVER", "Gloves (camera)"],
   ["FACE_COVER", "Face cover (camera)"],
   ["HEAD_COVER", "Head protection (camera)"],
-  ["UNMONITORED", "Not camera-monitored"],
+  ["UNMONITORED", "AI vision (Bedrock)"],
 ];
 const SEVERITIES = ["", "Serious", "Willful", "Repeat", "Other-than-serious"];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -178,6 +178,7 @@ $("approveBtn").addEventListener("click", async () => {
       `<a class="nav-link" href="/">Open live monitor →</a>`;
     $("okBanner").classList.remove("hidden");
     try { new BroadcastChannel("safesight").postMessage("zones-updated"); } catch (_) {}
+    loadLiveZones();
     window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (e) {
     showError(`Not published: ${e.message}`);
@@ -185,3 +186,59 @@ $("approveBtn").addEventListener("click", async () => {
     $("approveBtn").disabled = false;
   }
 });
+
+// ---------- quick rules (no PDF) ----------
+let liveZones = [];
+const money = (n) => `$${Number(n).toLocaleString()}`;
+
+async function loadLiveZones() {
+  try {
+    liveZones = await api("/api/zones");
+  } catch (e) { showError(`Could not load zones: ${e.message}`); return; }
+  const prev = $("ruleZone").value;
+  $("ruleZone").innerHTML = liveZones.map((z) => `<option value="${esc(z.zone_id)}">${esc(z.name)}</option>`).join("");
+  if (liveZones.some((z) => z.zone_id === prev)) $("ruleZone").value = prev;
+  renderRuleList();
+}
+
+function renderRuleList() {
+  const z = liveZones.find((x) => x.zone_id === $("ruleZone").value);
+  const rules = (z && z.ai_rules) || [];
+  $("ruleList").innerHTML = rules.length
+    ? rules.map((r) => `<li><span class="pill-ai">AI vision</span> <b>${esc(r.item)}</b>
+        <span class="muted-text">${r.fine != null ? money(r.fine) : "no fine set"}${r.severity ? " · " + esc(r.severity) : ""}
+        · ${esc(r.source === "custom" ? "custom rule" : r.source || "policy")}</span>
+        <button class="icon-btn" data-key="${esc(r.key)}" aria-label="Remove rule" title="Remove rule">×</button></li>`).join("")
+    : `<li class="muted-text">No AI-vision rules in this zone yet.</li>`;
+}
+
+$("ruleZone").addEventListener("change", renderRuleList);
+$("ruleAddBtn").addEventListener("click", async () => {
+  clearBanners();
+  const item = $("ruleText").value.trim();
+  if (!item) { showError("Describe the rule first, e.g. \"No phones in use\"."); return; }
+  $("ruleAddBtn").disabled = true;
+  try {
+    const fine = $("ruleFine").value === "" ? null : Math.round(+$("ruleFine").value);
+    await api(`/api/zones/${encodeURIComponent($("ruleZone").value)}/rules`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ item, fine, severity: $("ruleSev").value }),
+    });
+    $("ruleText").value = ""; $("ruleFine").value = "";
+    try { new BroadcastChannel("safesight").postMessage("zones-updated"); } catch (_) {}
+    await loadLiveZones();
+  } catch (e) { showError(`Rule not added: ${e.message}`); }
+  finally { $("ruleAddBtn").disabled = false; }
+});
+$("ruleList").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-key]");
+  if (!btn) return;
+  clearBanners();
+  try {
+    await api(`/api/zones/${encodeURIComponent($("ruleZone").value)}/rules/${encodeURIComponent(btn.dataset.key)}`,
+      { method: "DELETE" });
+    try { new BroadcastChannel("safesight").postMessage("zones-updated"); } catch (_) {}
+    await loadLiveZones();
+  } catch (err) { showError(`Could not remove rule: ${err.message}`); }
+});
+loadLiveZones();
