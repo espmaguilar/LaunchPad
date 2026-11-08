@@ -34,7 +34,12 @@ status:
 - "next_step_detected": the transcript shows the NEXT step's action while the current one isn't done.
 - "wrong_action": the student is doing something that contradicts the procedure.
 
-mistake: true only if the transcript clearly shows something the manual says not to do, e.g. a material or
+WRONG ORDER (separate from "done" - stay generous for done, but strict here): if ANY transcript line shows an
+action from a LATER step (they are listed below with their step numbers), set mistake=true,
+mistake_type="wrong_order", confidence >= 0.8, and say which later step it was. Example: current step "Place the
+pillow on the table", transcript "Placing a stuffed animal on the table" -> later step 3 -> wrong_order.
+
+Other mistakes: mistake=true only if the transcript clearly shows something the manual says not to do, e.g. a material or
 action that belongs to a LATER step done now (always wrong_order, even though it is also a different
 material), a material that appears in no step at all (wrong_material), a different material than the step says
 (wrong_material), the right material handled the wrong way (wrong_technique), moving on before the step
@@ -73,8 +78,32 @@ def build_prompt(steps, current_idx, transcript_lines):
         "Procedure:\n" + "\n".join(_step_line(s) for s in steps) +
         f"\n\nCURRENT step: {_step_line(cur)}" +
         (f"\nNEXT step: {_step_line(nxt)}" if nxt else "\nNEXT step: (none, this is the last step)") +
+        ("\nLATER steps (doing any of these now = wrong_order):\n" + "\n".join(_step_line(s) for s in steps[current_idx + 1:])
+         if current_idx + 1 < len(steps) else "") +
         f"\n\nTranscript since the CURRENT step started (oldest first; earlier steps' actions are not shown and never count):\n{lines}"
     )
+
+
+_MTYPE_ALIASES = {
+    "wrong_order": ("wrong order", "out of order", "order", "wrong sequence", "sequence", "skip", "skipped",
+                    "skipped step", "skipping", "too early", "early", "later step", "next step"),
+    "wrong_material": ("wrong material", "material", "wrong object", "wrong item", "wrong reagent"),
+    "wrong_technique": ("wrong technique", "technique", "wrong method", "handling", "wrong action"),
+    "incomplete": ("incomplete", "not finished", "unfinished", "not complete", "partial"),
+    "safety": ("safety", "ppe", "unsafe", "protection"),
+}
+
+
+def mistake_type(raw):
+    """'Wrong-Order', 'out of order', 'WRONG_ORDER' -> 'wrong_order'; unknown -> ''."""
+    t = re.sub(r"[\s_\-]+", " ", str(raw or "").strip().lower())
+    for canon, variants in _MTYPE_ALIASES.items():
+        if t == canon.replace("_", " ") or t in variants:
+            return canon
+    for canon, variants in _MTYPE_ALIASES.items():   # e.g. "wrong order (step 3)"
+        if any(v in t for v in variants if " " in v):
+            return canon
+    return ""
 
 
 def normalize(d):
@@ -94,11 +123,13 @@ def normalize(d):
     # step's visual done-condition is plainly in the transcript. That condition is the test.
     if seen and status == "in_progress" and not mistake:
         status = "done"
-    mtype = str(d.get("mistake_type") or "").strip().lower()
+    mtype = mistake_type(d.get("mistake_type"))
+    if mistake and not mtype and status == "next_step_detected":
+        mtype = "wrong_order"
     wwg = re.sub(r"\s+", " ", str(d.get("what_went_wrong") or "")).strip()[:200]
     fix = re.sub(r"\s+", " ", str(d.get("how_to_fix") or "")).strip()[:200]
-    if mistake and (mtype not in MISTAKE_TYPES or not wwg):
-        mistake = False  # an unexplained "mistake" is not shown to the student
+    if mistake and (not mtype or (not wwg and mtype != "wrong_order")):
+        mistake = False  # an unexplained "mistake" is not shown (wrong_order gets its wording in check())
     return {"status": status, "confidence": round(conf, 2),
             "evidence": re.sub(r"^\s*(\[\d{1,2}:\d{2}\]\s*)+", "", re.sub(r"\s+", " ", str(d.get("evidence") or ""))).strip()[:200],
             "tip": re.sub(r"\s+", " ", str(d.get("tip") or "")).strip()[:160],
@@ -248,6 +279,10 @@ def check(steps, current_idx, transcript_lines):
     if not objs:
         raise ValueError(f"no JSON in matcher reply: {text[:120]!r}")
     r = refine(normalize(objs[0]), steps, current_idx)
+    if r["mistake"] and r["mistake_type"] == "wrong_order" and not r["what_went_wrong"]:
+        cur = steps[current_idx]
+        r = {**r, "what_went_wrong": "You started a later step before finishing this one.",
+             "how_to_fix": r["how_to_fix"] or f"Step {cur['number']} comes first: {cur['instruction']}"}
     # instant mode: the key-object rule already gates advancing, so skip this extra Bedrock call
     if (not config.LENIENT_ADVANCE and config.ADVANCE_MODE != "instant" and r["status"] == "in_progress"
             and not r["mistake"] and transcript_lines):

@@ -244,6 +244,7 @@ def session_state(sid: str, since: int = 0):
 class Frames(BaseModel):
     frames: list[str] = []  # 1-2 JPEG data URLs, oldest first
     motion: str = ""        # browser hand-tracking summary (MediaPipe), optional
+    speaking: bool = False  # LabScribe is talking: log the line + watch for wrong moves, but never auto-advance
 
 
 @app.post("/api/sessions/{sid}/scribe")
@@ -264,7 +265,7 @@ def scribe_frames(sid: str, req: Frames):
     if not frames and not config.MOCK_MODE:
         raise HTTPException(422, "no frames")
     try:
-        return sessions.scribe_frames(sid, frames, motion=req.motion[:400])
+        return sessions.scribe_frames(sid, frames, motion=req.motion[:400], speaking=req.speaking)
     except sessions.SessionError as e:
         raise HTTPException(409, str(e))
 

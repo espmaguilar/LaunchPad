@@ -73,41 +73,24 @@ after each one with test steps for the user.
   Scribe: holding/showing/wearing counts as an action ("Holding a stuffed dog up to the camera.") - step 2 was marked
   manually because the scribe wrote "No visible action" for 18 s while the toy was held (prompt fix NOT yet verified
   on real frames - the frames were lost in a server reload).
-- [x] Off-track coach cards (user: "if another action is being done instead ... it should show in the coach chat. It
-  used to show but not anymore" - the lenient/instant branches skipped the old strict-only possible_skip path, and the
-  "generous" matcher almost never reports mistakes): `sessions._check_off_track` (instant mode, when the step didn't
-  advance): the NEWEST line shows ANOTHER step's action+object (same `_key_object_line` rule) and not the current
-  step's -> buffer: same other step on 2 checks in a row >= OFF_TRACK_SECONDS (6) apart; "No visible action" or a
-  different line resets. Then feedback (wrong_order for a later step, incomplete for an already-done one) + snapshot
-  + voice "Hold on — that looks like step 4. Let's finish step 3 first: ..." -> chat mistake card; once per step;
-  corrected when the step completes. Matcher mistakes (2 x same type >= 0.7) still apply. Replay of real run f16faa
-  (`test_data/session_f16faa.json`) must produce NO cards.
-- [x] One name per object (user: "silver water bottle" in the scribe but "toothbrush" on the grid): the grid's
-  detector is EfficientDet-Lite0 (80 COCO classes, ~320 px input, low thresholds) and never talked to the scribe.
-  Now the detector only gives POSITIONS; names come from the scribe: it returns `boxes` [{name, box}] (normalized,
-  corner-format [x1,y1,x2,y2] auto-converted, max 4; repeats refresh boxes). `hands.setScribeObjects` -> the object the
-  action sentence is about goes to the ONE box a hand holds; other boxes take the best-overlapping scribe box name
-  (Llama boxes are rough: photo test = 1 offset, 1 on empty background, so they're only a hint). Unnamed boxes =
-  faint outline, no label. Detector classes are no longer shown or sent to the scribe ("an object" instead).
-  Scribe prompt: look at frame 2 first; identical frames = holding still -> "Holding a ..."; never "No visible action"
-  with something in hand (photo test: 3/3 now describe holding; before, 2 identical frames -> "No visible action").
-- [x] Detection pauses while LabScribe speaks (user: "When the person is saying the instruction, no detection occurs.
-  Detection only works after speech"): `voice.ts` tracks speaking from speak() (incl. loading the MP3) until `ended` /
-  speechSynthesis onend / error / mute, with a safety timeout (4 s + 70 ms per char). `lab.ts` tick sends nothing while
-  speaking and clears the 2-frame ring when speech ends (no frames from during speech). Badge: "LISTEN · DETECTION
-  PAUSED" (amber dot). Browser check: intro voice 0.4-9.1 s, first frames sent at 9.4 s. Applies to all speech (step
-  announcements, mistakes, coach answers). Muted = no pause. MediaPipe overlay keeps drawing (visual only).
-- [x] FIXED "Internal Server Error" (root cause found): DynamoDB returns numbers as Decimal; after CONFUSED_AFTER_SECONDS
-  the confused offer stores `s["confused"][Decimal(1)]`, and json.dumps can't use a Decimal as a dict KEY (default=
-  doesn't apply to keys) -> every request on that session (scribe, end, session list) = 500. Introduced by session
-  saving / the JSON copy in public() (FastAPI's encoder used to hide it); tests never saw it (mock procedures use
-  ints). Fix: `store.plain()` converts Decimals in get_procedure and again in `sessions.start`. Test 17 in
-  test_matcher. Also: `public()` copies via JSON with retries, `_save` never raises, `_saved_at` created at start.
-- [x] Code-review fixes (2026-11-08): (1) manual clicks send `{step: n}` = step number on screen (0 = all done) with
-  steps/done|undo|restart and substeps/done; inside the session lock `_stale()` -> return state unchanged (a tick that
-  advanced 2 -> 3 can't be followed by a stale "done step 2" ticking step 3). No body = old behaviour. Test 18.
-  (2) instant mode skips `matcher.confirm_done` (one Bedrock call less per in_progress tick). (3) `dismiss` takes the
-  busy lock. (4) README: demo without --reload (sessions are in memory).
+- [x] Wrong moves detected (2026-11-08; evidence: 0 mistake=true in ~100 checks across 10 logged sessions):
+  (1) `_check_off_track` scans EVERY line since the step started (no reset on "No visible action"), only LATER
+  steps (earlier steps' results persist - "Wearing headphones" on step 5 is fine). 1 sighting flags when the later
+  step's key words don't overlap the current step's (stuffed animal vs pillow); 2 sightings (repeats count, no time
+  gap) when they share key objects. OFF_TRACK_SECONDS default 0. One wrong_order card per step (matcher + off-track
+  deduped via `_order_card`). (2) `_key_object_line(step, lines, later)`: a handle-only step (place/hold/put) does
+  not own a line that shows a later step's specific action ("Holding and turning the stuffed animal" on "Place the
+  stuffed animal" -> off-track, not done). (3) matcher prompt: explicit WRONG ORDER rule + "LATER steps" list with
+  numbers; `matcher.mistake_type()` maps variants ("Wrong-Order", "out of order", "skipped step"...); wrong_order
+  without wording gets generated text; wrong_order needs ONE confident check (others MISTAKE_CHECKS=2).
+  (4) speech: frames keep flowing while LabScribe speaks, marked `speaking: true`; those ticks log the line (marked
+  `speech`) and run off-track only - no matcher, no advancing; speech lines never complete a step later. Badge:
+  "SPEAKING · WATCHING FOR MISTAKES".
+  Tests: test_replay.py - 96e979 correct run (5/5 auto, 0 cards) + 3 scenarios on its procedure (stuffed animal on
+  the pillow step -> flagged on line 1; removing headphones on step 2 -> flagged once; holding+turning on step 3 ->
+  skip flagged, step 3 not completed); 61035e/f16faa now expect exactly one card each (headphones removed during
+  step 2 - a real wrong move). Real-matcher check: correct run 5/5 with 0 cards; all 3 scenarios caught on the first
+  line; f16faa: 1 true card, no false cards on the shared-bottle steps.
 - [x] Session logs: `sessions._save` writes session_logs/{id}/session.json (procedure, transcript, checks, steps,
   feedback, config) at most every 2 s + on end, and frames/{frame_id}.jpg for every new transcript line. Gitignored,
   SAVE_SESSIONS=false disables (tests do). Survives server reloads (sessions themselves still don't). Turn a real
@@ -142,7 +125,7 @@ after each one with test steps for the user.
   controls, steps drawer, coach chat = tips + step messages + mistake cards + Q&A), collapsible sidebar with
   "Feed in a lab manual". Chat log lives in `useLab` so it survives page changes.
 - [x] "Feeling confused?" (`breakdown.py`, `POST /api/sessions/{id}/confused {yes}`): on a camera step for
-  CONFUSED_AFTER_SECONDS (25, env-overridable) -> `confused_offer` event -> pop-up. No = never again for that
+  CONFUSED_AFTER_SECONDS (10 for the demo, was 25; env-overridable) -> `confused_offer` event -> pop-up. No = never again for that
   step. Yes = Bedrock splits the step into 2-5 sub-steps each with its own camera check (last one = the step's
   done-condition); the session checks the current sub-step with `matcher.confirm_done` instead of the matcher;
   all done -> step unlocks. Manual sub-step tick: `POST /substeps/done`.

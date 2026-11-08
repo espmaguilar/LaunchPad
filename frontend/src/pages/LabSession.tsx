@@ -180,7 +180,7 @@ function CameraFeed({ lab, running, mock, elapsed, confidence }: { lab: Lab; run
           <video ref={ref} muted playsInline aria-label="Live bench camera" />
           <div className="camera-vignette" />
           <HandOverlay videoRef={ref} />
-          <div className={`camera-label ${running && lab.speaking ? "paused" : ""}`}><i /><span>{!running ? "CAMERA ON" : lab.speaking ? "LISTEN · DETECTION PAUSED" : "AI WATCHING"}</span></div>
+          <div className={`camera-label ${running && lab.speaking ? "paused" : ""}`}><i /><span>{!running ? "CAMERA ON" : lab.speaking ? "SPEAKING · WATCHING FOR MISTAKES" : "AI WATCHING"}</span></div>
           {showCallout && (() => {
             const f = last.focus;
             // focus = [x, y, w, h] of the action in the (cover-cropped) frame; center of that box

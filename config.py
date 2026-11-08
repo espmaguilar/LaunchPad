@@ -51,8 +51,8 @@ MATCH_MIN_CONFIDENCE = 0.7      # below this a mistake / skip check doesn't coun
 # "put on headphones"). "careful" = 2 checks + vision finish check + MIN_STEP_SECONDS; "lenient"/"strict" = older modes.
 ADVANCE_MODE = _env("ADVANCE_MODE", "instant").lower()
 SAVE_SESSIONS = _env("SAVE_SESSIONS", "true").lower() == "true"
-# off-track buffer: the newest line must show ANOTHER step's action on 2 checks in a row, >= this many seconds apart
-OFF_TRACK_SECONDS = float(_env("OFF_TRACK_SECONDS", "6"))   # session_logs/ for replay tests
+# off-track: optional extra wait (s) after the first sighting of a later step's action (sightings rule in sessions.py)
+OFF_TRACK_SECONDS = float(_env("OFF_TRACK_SECONDS", "0"))   # session_logs/ for replay tests
 # instant mode's floor for the matcher's number: the key-object line is the real gate. Llama reported "in_progress 0.4"
 # for "Holding up a stuffed animal" on "Place the stuffed animal..." (its number meant "not finished", not "unsure"),
 # which blocked correct matches for 30 s at 0.55.
@@ -69,7 +69,7 @@ FINISH_MIN_CONFIDENCE = 0.55       # vision finish check must say done at least 
 IN_PROGRESS_MIN_CONFIDENCE = 0.55  # matcher "in_progress" this sure is also sent to the vision finish check
 MISTAKE_CHECKS = 2              # consecutive confident detections of the same mistake before flagging
 SKIP_CHECKS = 2                 # consecutive "next_step_detected" before "Possible skipped step"
-CONFUSED_AFTER_SECONDS = int(_env("CONFUSED_AFTER_SECONDS", "25"))  # on a camera step this long -> "Feeling confused?"
+CONFUSED_AFTER_SECONDS = int(_env("CONFUSED_AFTER_SECONDS", "10"))  # demo: 10 s (was 25)  # on a camera step this long -> "Feeling confused?"
 MAX_SUBSTEPS = 5                # a confused step is split into 2..MAX_SUBSTEPS sub-steps
 SUBSTEP_MIN_CONFIDENCE = 0.5    # focused check confidence needed to tick a sub-step
 CHECK_HISTORY = 40              # matcher results kept per session (debugging + lab record)

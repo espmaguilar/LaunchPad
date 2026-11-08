@@ -166,16 +166,18 @@ def _public_view(s, since, events):
 
 
 # ---------------- transcript ----------------
-def _append(s, line, now, frame_id=None):
+def _append(s, line, now, frame_id=None, speaking=False):
     t = s["transcript"]
-    entry = {"time": utc_timestamp(now), "elapsed": round(now - s["t0"], 1), **line, "repeat": 1, "frame_id": frame_id}
+    entry = {"time": utc_timestamp(now), "elapsed": round(now - s["t0"], 1), **line, "repeat": 1, "frame_id": frame_id,
+             "speech": bool(speaking)}   # seen while LabScribe was talking: can flag mistakes, never advances
     if t and t[-1]["action"] == line["action"]:
         if not t[-1].get("frame_id"):
             t[-1]["frame_id"] = frame_id
         t[-1].update(repeat=t[-1]["repeat"] + 1, last_time=entry["time"], last_elapsed=entry["elapsed"],
                      objects=line["objects"] or t[-1]["objects"],
                      # positions change even when the sentence repeats: keep the newest boxes for the grid labels
-                     focus=line.get("focus") or t[-1].get("focus"), boxes=line.get("boxes") or t[-1].get("boxes") or [])
+                     focus=line.get("focus") or t[-1].get("focus"), boxes=line.get("boxes") or t[-1].get("boxes") or [],
+                     speech=bool(t[-1].get("speech")) and bool(speaking))   # seen again after speech -> counts
         return t[-1], False
     t.append(entry)
     if len(t) > MAX_LINES:
@@ -289,7 +291,9 @@ def apply_check(s, r, now):
         ms["count"] = ms["count"] + 1 if ms["type"] == r["mistake_type"] else 1
         ms["type"] = r["mistake_type"]
         key = [step_no, f"mistake:{r['mistake_type']}"]
-        if ms["count"] >= config.MISTAKE_CHECKS and key not in s["flagged"]:
+        need = 1 if r["mistake_type"] == "wrong_order" else config.MISTAKE_CHECKS   # doing a later step: say so now
+        if ms["count"] >= need and key not in s["flagged"] \
+                and not (r["mistake_type"] == "wrong_order" and _order_card(s, step_no)):
             s["flagged"].append(key)
             fb = {"id": secrets.token_hex(4), "kind": "mistake", "step": step_no, "time": utc_timestamp(now),
                   "elapsed": round(now - s["t0"], 1), "mistake_type": r["mistake_type"],
@@ -305,7 +309,9 @@ def apply_check(s, r, now):
     if config.ADVANCE_MODE == "instant" and not config.LENIENT_ADVANCE:
         qualifies = (not r["mistake"] and r["status"] in ("done", "in_progress", "next_step_detected")
                      and r["confidence"] >= config.INSTANT_MIN_CONFIDENCE)
-        hit = _key_object_line(steps[s["current"]], _window(s, now)) if qualifies else None
+        later = steps[s["current"] + 1:]
+        lines = [l for l in _window(s, now) if not l.get("speech")]   # lines seen while LabScribe spoke never advance
+        hit = _key_object_line(steps[s["current"]], lines, later) if qualifies else None
         s["checks"][-1]["confirm"] = (f"key object seen: {hit}" if hit else
                                       "no line shows the step's action on its key object" if qualifies else None)
         if hit:
@@ -445,61 +451,75 @@ def _shows_action(groups, action_text):
     return False
 
 
-def _key_object_line(step, lines):
+def _key_object_line(step, lines, later=None):
     """The newest transcript line whose ACTION sentence names one of the step's key objects AND shows the step's
     action (e.g. 'unscrew' for 'unscrew the cap'). Only the sentence counts - never the list of visible objects
-    (a toy sitting in the background must not pass 'turn the specimen around'). None if there is none."""
+    (a toy sitting in the background must not pass 'turn the specimen around'). None if there is none.
+    later: the steps after this one. A step whose only action is generic handling (place/hold/put) does NOT own a
+    line that shows a later step's specific action ("Holding and turning the stuffed animal" on "Place the stuffed
+    animal" is step 4's turn -> off-track, not a completed step 3)."""
     keys, groups = _key_words(step), _step_groups(step)
     norm = lambda w: w[:-1] if w.endswith("s") and len(w) > 4 else w
+    handle_only = groups <= {"handle"}
     for l in reversed(lines):
         words = {norm(w) for w in re.findall(r"[a-z]+", l["action"].lower())}
         if keys & words and _shows_action(groups, l["action"]):
+            if handle_only and later and any(_step_groups(o) - {"handle"} and _key_object_line(o, [l]) for o in later):
+                continue
             return l["action"]
     return None
 
 
+def _order_card(s, step_no):
+    """Is there already a wrong-order card for this step (from the matcher or off-track)? One per step."""
+    return any(fb["step"] == step_no and fb["mistake_type"] == "wrong_order" for fb in s["feedback"])
+
+
 def _check_off_track(s, now):
-    """The student is doing ANOTHER step's action instead of the current one -> coach card + voice, with a buffer:
-    the newest transcript line must match the same other step on 2 checks in a row, >= OFF_TRACK_SECONDS apart.
-    Uses the same action+object rule that advances steps, so 'tilting the bottle' on 'unscrew the cap' = step 4."""
+    """The student is doing a LATER step's action instead of the current one -> coach card + voice.
+    Scans EVERY line since the current step started (a "No visible action" in between doesn't reset anything).
+    Flags after 1 sighting when the later step's key objects don't overlap the current step's (unambiguous:
+    stuffed animal vs pillow); after 2 sightings (repeats count) when they share key objects (bottle vs bottle).
+    Earlier steps are not checked: their results persist ("Wearing headphones" on step 5 is not a mistake)."""
     steps, cur = s["procedure"]["steps"], s["current"]
-    win = _window(s, now)
-    latest = win[-1] if win else None
-    other = None
-    if latest and not latest["action"].lower().startswith("no visible action") \
-            and not _key_object_line(steps[cur], [latest]):
-        for j, st in enumerate(steps):
-            if j != cur and st.get("camera_checkable", True) and _key_object_line(st, [latest]):
-                other = j
-                if j > cur:   # a later step is the likelier mix-up; prefer the nearest later one
-                    break
-    if other is None:
-        s["off_track"] = None
+    if cur >= len(steps):
         return
-    elapsed = round(now - s["t0"], 1)
-    ot = s.get("off_track")
-    if not ot or ot["step"] != other:
-        s["off_track"] = {"step": other, "since": elapsed, "count": 1}
+    c = steps[cur]
+    if _order_card(s, c["number"]) or any(k[0] == c["number"] and str(k[1]).startswith("off_track") for k in s["flagged"]):
         return
-    ot["count"] += 1
-    key = [steps[cur]["number"], f"off_track:{steps[other]['number']}"]
-    if ot["count"] < 2 or elapsed - ot["since"] < config.OFF_TRACK_SECONDS or key in s["flagged"]:
+    later = steps[cur + 1:]
+    win = [l for l in _window(s, now) if not l["action"].lower().startswith("no visible action")]
+    mine = [l for l in win if _key_object_line(c, [l], later)]          # lines that belong to the current step
+    candidates = [l for l in win if l not in mine]
+    ckeys = _key_words(c)
+    found = None
+    for o in later:                                                       # nearest later step first
+        if not o.get("camera_checkable", True):
+            continue
+        hits = [l for l in candidates if _key_object_line(o, [l])]
+        if not hits:
+            continue
+        sightings = sum(l.get("repeat", 1) for l in hits)
+        need = 2 if ckeys & _key_words(o) else 1
+        waited = now - s["t0"] - hits[0]["elapsed"] >= config.OFF_TRACK_SECONDS
+        s["off_track"] = {"step": o["number"], "sightings": sightings, "need": need}
+        if sightings >= need and waited:
+            found = (o, hits[-1])
+        break
+    if not found:
         return
-    s["flagged"].append(key)
-    o, c = steps[other], steps[cur]
-    later = other > cur
-    action = latest["action"].rstrip(".")
+    o, line = found
+    s["flagged"].append([c["number"], f"off_track:{o['number']}"])
+    action = line["action"].rstrip(".")
     fb = {"id": secrets.token_hex(4), "kind": "mistake", "step": c["number"], "time": utc_timestamp(now),
-          "elapsed": elapsed, "mistake_type": "wrong_order" if later else "incomplete",
-          "what_went_wrong": (f"You're {action[0].lower() + action[1:]} - that looks like step {o['number']}"
-                              f"{'' if later else ', which is already done'}."),
+          "elapsed": round(now - s["t0"], 1), "mistake_type": "wrong_order",
+          "what_went_wrong": f"You're {action[0].lower() + action[1:]} - that looks like step {o['number']}.",
           "how_to_fix": f"Step {c['number']} comes first: {c['instruction']}",
-          "evidence": latest["action"], "snapshot_id": _snapshot(s, latest["action"], win),
+          "evidence": line["action"], "snapshot_id": _snapshot(s, line["action"], win),
           "dismissed": False, "corrected": None}
     s["feedback"].append(fb)
-    voice = (f"Hold on — that looks like step {o['number']}. Let's finish step {c['number']} first: {c['instruction']}"
-             if later else f"Hold on — step {o['number']} is already done. Now: {c['instruction']}")
-    _say(s, "mistake", voice, feedback_id=fb["id"])
+    _say(s, "mistake", f"Hold on — that looks like step {o['number']}. Let's finish step {c['number']} first: "
+                       f"{c['instruction']}", feedback_id=fb["id"])
 
 
 def _can_confirm(s):
@@ -540,7 +560,7 @@ def _focus_terms(s):
     return scribe.key_terms(step)
 
 
-def scribe_frames(sid, frames, now=None, motion=""):
+def scribe_frames(sid, frames, now=None, motion="", speaking=False):
     """Scribe + matcher for one tick. Returns {line, new_line, state} or {skipped: True}."""
     s = get(sid)
     if s["ended_at"]:
@@ -569,11 +589,16 @@ def scribe_frames(sid, frames, now=None, motion=""):
                 s["last_error"] = str(e)[:200]
                 return {"error": s["last_error"], "state": public(s, len(s["transcript"]), _drain(s))}
         s["last_error"] = None
-        entry, new = _append(s, line, now, frame_id)
+        entry, new = _append(s, line, now, frame_id, speaking)
         if new and frames and frame_id is not None:
             _save_frame(s, frame_id, frames[-1])   # the frame behind every transcript line, for replay tests
 
         cur_step = s["procedure"]["steps"][s["current"]] if s["current"] < len(s["procedure"]["steps"]) else None
+        if speaking:
+            # LabScribe is talking: keep watching for wrong moves, but never auto-advance (or judge the step) now
+            if cur_step is not None and not _is_paper(cur_step):
+                _check_off_track(s, now)
+            return {"line": entry, "new_line": new, "state": public(s, len(s["transcript"]), _drain(s))}
         if cur_step is not None and _is_paper(cur_step):
             # paper/screen step: the camera can't judge it - wait for "Mark step done"
             s["coach_tip"] = {"step": cur_step["number"], "text": PAPER_TIP, "time": utc_timestamp(now)}

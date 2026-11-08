@@ -1,0 +1,210 @@
+{
+ "note": "Real session 96e979ab189e (2026-11-08), Simple Demo Lab: a correct-order run, every step advanced on its own.",
+ "procedure": {
+  "title": "Simple Demo Lab",
+  "steps": [
+   {
+    "camera_checkable": true,
+    "expected_action": "headphones on student's head",
+    "instruction": "Put on the headphones.",
+    "number": 1,
+    "required_ppe": [],
+    "safety_critical": true,
+    "section": "",
+    "visual_cues": [
+     "headphones",
+     "student's head"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "pillow on the table",
+    "instruction": "Place the pillow on the table.",
+    "number": 2,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "pillow",
+     "table"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "stuffed animal on the table",
+    "instruction": "Place the stuffed animal on the table.",
+    "number": 3,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "stuffed animal",
+     "table"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "stuffed animal rotated",
+    "instruction": "Turn the stuffed animal around.",
+    "number": 4,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "stuffed animal",
+     "table"
+    ]
+   },
+   {
+    "camera_checkable": true,
+    "expected_action": "headphones off student's head",
+    "instruction": "Take off the headphones.",
+    "number": 5,
+    "required_ppe": [],
+    "safety_critical": false,
+    "section": "",
+    "visual_cues": [
+     "headphones",
+     "student's head"
+    ]
+   }
+  ]
+ },
+ "transcript": [
+  {
+   "elapsed": 6.1,
+   "last_elapsed": null,
+   "action": "Holding headphones."
+  },
+  {
+   "elapsed": 10.6,
+   "last_elapsed": null,
+   "action": "Putting on white headphones."
+  },
+  {
+   "elapsed": 18.3,
+   "last_elapsed": null,
+   "action": "Lying down on a pillow."
+  },
+  {
+   "elapsed": 23.0,
+   "last_elapsed": null,
+   "action": "Squeezing a purple pillow."
+  },
+  {
+   "elapsed": 27.7,
+   "last_elapsed": null,
+   "action": "Moving a purple pillow up."
+  },
+  {
+   "elapsed": 38.2,
+   "last_elapsed": null,
+   "action": "Lowering a white stuffed animal."
+  },
+  {
+   "elapsed": 45.7,
+   "last_elapsed": null,
+   "action": "No visible action."
+  },
+  {
+   "elapsed": 49.8,
+   "last_elapsed": null,
+   "action": "Turning a white stuffed animal."
+  },
+  {
+   "elapsed": 57.4,
+   "last_elapsed": null,
+   "action": "Wearing headphones."
+  },
+  {
+   "elapsed": 64.1,
+   "last_elapsed": null,
+   "action": "Touching her hair with right hand."
+  },
+  {
+   "elapsed": 68.8,
+   "last_elapsed": null,
+   "action": "Wearing white headphones."
+  },
+  {
+   "elapsed": 88.2,
+   "last_elapsed": null,
+   "action": "Removing headphones from head."
+  }
+ ],
+ "checks": [
+  {
+   "elapsed": 6.1,
+   "status": "in_progress",
+   "confidence": 0.8,
+   "mistake": false
+  },
+  {
+   "elapsed": 10.6,
+   "status": "done",
+   "confidence": 1.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 18.3,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 23.0,
+   "status": "in_progress",
+   "confidence": 0.6,
+   "mistake": false
+  },
+  {
+   "elapsed": 27.7,
+   "status": "in_progress",
+   "confidence": 0.7,
+   "mistake": false
+  },
+  {
+   "elapsed": 38.2,
+   "status": "in_progress",
+   "confidence": 0.8,
+   "mistake": false
+  },
+  {
+   "elapsed": 45.7,
+   "status": "not_started",
+   "confidence": 0.0,
+   "mistake": false
+  },
+  {
+   "elapsed": 49.8,
+   "status": "in_progress",
+   "confidence": 0.8,
+   "mistake": false
+  },
+  {
+   "elapsed": 57.4,
+   "status": "in_progress",
+   "confidence": 0.5,
+   "mistake": false
+  },
+  {
+   "elapsed": 64.1,
+   "status": "in_progress",
+   "confidence": 0.6,
+   "mistake": false
+  },
+  {
+   "elapsed": 68.8,
+   "status": "in_progress",
+   "confidence": 0.6,
+   "mistake": false
+  },
+  {
+   "elapsed": 88.2,
+   "status": "done",
+   "confidence": 1.0,
+   "mistake": false
+  }
+ ],
+ "manual_done": []
+}

@@ -22,7 +22,7 @@ export interface LabState {
   chat: ChatMessage[];
   asking: boolean;
   confusedOffer: number | null; // step number the "Feeling confused?" pop-up is asking about
-  speaking: boolean;            // LabScribe is talking: detection is paused until it finishes
+  speaking: boolean;            // LabScribe is talking: frames are sent "speaking" (mistakes only, no advancing)
 }
 
 export interface ChatMessage {
@@ -50,11 +50,8 @@ export function useLab(health: Health | null) {
     stream: null, session: null, lines: [], lastMs: null, model: null, skipped: 0, scribeError: null, error: null, starting: false,
     coach: null, chat: [], asking: false, confusedOffer: null, speaking: false,
   });
-  // pause detection while speaking; afterwards drop frames captured during speech so judging starts fresh
-  useEffect(() => onSpeaking((on) => {
-    if (!on) ring.current = [];
-    setS((x) => ({ ...x, speaking: on }));
-  }), []);
+  // while LabScribe speaks, frames still go to the server marked speaking: it only watches for wrong moves then
+  useEffect(() => onSpeaking((on) => setS((x) => ({ ...x, speaking: on }))), []);
   const pushChat = useCallback((msgs: Omit<ChatMessage, "id">[]) => {
     if (!msgs.length) return;
     setS((x) => ({ ...x, chat: [...x.chat, ...msgs.map((m) => ({ ...m, id: ++chatId }))].slice(-60) }));
@@ -109,12 +106,11 @@ export function useLab(health: Health | null) {
     const sess = sessionRef.current;
     if (!sess || sess.ended_at) return;
     if (inFlight.current) { setS((x) => ({ ...x, skipped: x.skipped + 1 })); return; } // no backlog
-    if (isSpeaking()) return; // no detection while LabScribe is saying the instruction
     const frames = ring.current.slice();
     if (!frames.length && !mock) return; // camera not ready yet
     inFlight.current = true;
     try {
-      const r = await post<ScribeResult>(`/api/sessions/${sess.session_id}/scribe`, { frames, motion: motionSummary() });
+      const r = await post<ScribeResult>(`/api/sessions/${sess.session_id}/scribe`, { frames, motion: motionSummary(), speaking: isSpeaking() });
       if (sessionRef.current?.session_id !== sess.session_id) return;
       applyState(r.state);
       if (r.line) {

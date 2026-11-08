@@ -72,20 +72,22 @@ assert s["current"] == 0
 sessions.apply_check(s, check("done"), s["t0"] + 18)
 assert s["current"] == 1
 
-# 3. Mistakes: different types in a row don't flag; same type twice does, only once per step
+# 3. Mistakes: wrong_order flags on ONE confident check; other types need the same type twice; once per step + type
 m1 = dict(mistake=True, mistake_type="wrong_order", what_went_wrong="You added vinegar.", how_to_fix="Step 3 first.")
 m2 = dict(mistake=True, mistake_type="wrong_material", what_went_wrong="You used salt.", how_to_fix="Step 2 says water.")
-sessions.apply_check(s, check("wrong_action", **m1), s["t0"] + 21)
-sessions.apply_check(s, check("wrong_action", **m2), s["t0"] + 24)
+sessions.apply_check(s, check("wrong_action", 0.5, **m1), s["t0"] + 20)   # unsure -> ignored
 assert not s["feedback"]
+sessions.apply_check(s, check("wrong_action", **m1), s["t0"] + 21)
+assert len(s["feedback"]) == 1 and s["feedback"][0]["mistake_type"] == "wrong_order"    # one check is enough
+sessions.apply_check(s, check("wrong_action", **m2), s["t0"] + 24)
+assert len(s["feedback"]) == 1                                                         # material: needs 2
 sessions.apply_check(s, check("wrong_action", **m2), s["t0"] + 27)
-assert len(s["feedback"]) == 1 and s["feedback"][0]["mistake_type"] == "wrong_material"
+assert len(s["feedback"]) == 2 and s["feedback"][1]["mistake_type"] == "wrong_material"
 for t in (30, 33, 36):
     sessions.apply_check(s, check("wrong_action", **m2), s["t0"] + t)
-assert len(s["feedback"]) == 1                           # not repeated
-sessions.apply_check(s, check("wrong_action", 0.5, **m1), s["t0"] + 39)   # unsure -> ignored
-sessions.apply_check(s, check("wrong_action", 0.5, **m1), s["t0"] + 42)
-assert len(s["feedback"]) == 1
+    sessions.apply_check(s, check("wrong_action", **m1), s["t0"] + t + 1)
+assert len(s["feedback"]) == 2                           # not repeated
+s["feedback"] = s["feedback"][1:]                        # keep later sections' counts as before
 
 # 4. Possible skipped step: next step seen twice while current isn't done
 sessions.apply_check(s, check("next_step_detected"), s["t0"] + 45)
@@ -337,8 +339,8 @@ assert s["current"] == 2                                                        
 sessions.apply_check(s, check("done", 0.9), s["t0"] + 11)
 assert s["complete"] if "complete" in s else s["current"] == 3
 
-# 16. Off-track: doing ANOTHER step's action -> coach card + voice, after a buffer (2 checks, >= 6 s apart)
-config.OFF_TRACK_SECONDS = 6
+# 16. Off-track: doing a LATER step's action -> coach card + voice (shared key objects: 2 sightings, no gap)
+config.OFF_TRACK_SECONDS = 0
 s = sessions.start(specimen)
 s["current"] = 2
 s["steps_state"][0]["status"] = s["steps_state"][1]["status"] = "done"
@@ -350,24 +352,21 @@ def line(t, a):
     s["transcript"].append({"elapsed": t, "action": a, "objects": [], "repeat": 1})
 line(2.0, "Tilting a silver bottle.")
 sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 3)
-assert not s["feedback"] and s["off_track"]["step"] == 3            # first sighting: buffer, no card yet
+assert not s["feedback"] and s["off_track"]["sightings"] == 1 and s["off_track"]["need"] == 2   # shares "bottle"
 line(4.0, "No visible action.")
 sessions.apply_check(s, check("not_started", 0.0), s["t0"] + 5)
-assert s["off_track"] is None                                       # stray line -> reset
+assert not s["feedback"] and s["off_track"]["sightings"] == 1       # "No visible action" does NOT reset
 line(6.0, "Tilting a silver bottle over the table.")
-sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 7)
-line(9.0, "Tilting a silver bottle.")
-sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 10)
-assert not s["feedback"]                                            # 2 checks but only 3 s apart: still buffering
-line(13.0, "Tilting the silver bottle again.")
-sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 14)
+sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 7)     # 2nd sighting, no time gap needed
 fb = s["feedback"][-1]
 assert fb["mistake_type"] == "wrong_order" and "step 4" in fb["what_went_wrong"] and fb["how_to_fix"].startswith("Step 3")
 ev = [e for e in s["events"] if e["type"] == "mistake"][-1]
 assert ev["voice"].startswith("Hold on — that looks like step 4") and ev["feedback_id"] == fb["id"]
 line(16.0, "Tilting the silver bottle.")
 sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 22)
-assert len(s["feedback"]) == 1                                      # once per step
+sessions.apply_check(s, check("wrong_action", 0.9, mistake=True, mistake_type="wrong_order",
+                              what_went_wrong="You tilted the bottle.", how_to_fix="Step 3 first."), s["t0"] + 22.5)
+assert len(s["feedback"]) == 1                                      # once per step (matcher + off-track deduped)
 line(23.0, "Unscrewing the cap from a silver bottle.")
 sessions.apply_check(s, check("in_progress", 0.8), s["t0"] + 24)
 assert s["current"] == 3 and fb["corrected"] is True               # doing the right step completes it -> corrected
@@ -420,5 +419,23 @@ matcher.check(specimen["steps"], 0, [{"elapsed": 1.0, "action": "Adjusting headp
 assert calls_before == [1]
 config.ADVANCE_MODE = "instant"
 matcher.confirm_done, aws_clients.bedrock = _orig, _orig_b
+
+# 19. Speaking ticks: the line is logged and off-track runs, but nothing advances; lines seen while LabScribe spoke
+#     never complete a step later either
+config.MOCK_MODE, config.ADVANCE_MODE = True, "instant"
+s = sessions.start(specimen)
+sid = s["session_id"]
+for i in range(6):
+    sessions.scribe_frames(sid, [b"f"], now=s["t0"] + 3 * (i + 1), speaking=True)
+assert s["current"] == 0 and len(s["transcript"]) >= 1 and all(l["speech"] for l in s["transcript"])
+assert all(c["step"] != 1 or False for c in s["checks"]) or not s["checks"]      # no matcher checks while speaking
+config.MOCK_MODE = False
+s["transcript"] = [{"elapsed": 20.0, "action": "Adjusting headphones on head.", "objects": [], "repeat": 1, "speech": True}]
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 21)
+assert s["current"] == 0                                         # heard during speech: doesn't advance
+s["transcript"].append({"elapsed": 22.0, "action": "Adjusting headphones on head.", "objects": [], "repeat": 1, "speech": False})
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 23)
+assert s["current"] == 1                                         # seen again after speech: advances
+config.MOCK_MODE = True
 
 print("all matcher checks passed")
