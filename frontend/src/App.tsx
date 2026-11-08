@@ -27,6 +27,12 @@ export default function App() {
   const [muted, setMutedState] = useState(isMuted());
   const [recordId, setRecordId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem("labscribe-sidebar") !== "open"; } catch { return true; }
+  });
+  const toggleSidebar = () => {
+    setCollapsed((c) => { try { localStorage.setItem("labscribe-sidebar", c ? "open" : "closed"); } catch { /* ignore */ } return !c; });
+  };
   const lab = useLab(health);
 
   const setPage = useCallback((p: Page) => {
@@ -65,8 +71,12 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
         <Logo />
+        <button className="sidebar-collapse" onClick={toggleSidebar} title={collapsed ? "Open sidebar" : "Collapse sidebar"}
+          aria-label={collapsed ? "Open sidebar" : "Collapse sidebar"}>
+          <Icon name="chevron" size={15} />
+        </button>
         <button className="workspace" onClick={() => setPage("settings")} title="Workspace settings">
           <div className="workspace-icon">{initials}</div>
           <div>
@@ -77,7 +87,7 @@ export default function App() {
         </button>
         <nav>
           {NAV.map((item) => (
-            <button key={item.page} className={page === item.page ? "active" : ""} onClick={() => setPage(item.page)}>
+            <button key={item.page} className={page === item.page ? "active" : ""} onClick={() => setPage(item.page)} title={item.label}>
               <Icon name={item.icon} />
               <span>{item.label}</span>
               {item.page === "live" && recording && <i title="Session recording" />}
@@ -85,6 +95,14 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          <button className="manual-upload" onClick={() => setPage("procedures")} title="Feed in a lab manual">
+            <span><Icon name="upload" size={17} /></span>
+            <div>
+              <strong>Feed in a lab manual</strong>
+              <small>Upload PDF or use a sample</small>
+            </div>
+            <Icon name="chevron" size={13} />
+          </button>
           <div className="tip-card">
             <div className="tip-icon"><Icon name="spark" size={16} /></div>
             <strong>{health?.mock_mode ? "Mock mode" : "LabScribe tip"}</strong>
@@ -100,14 +118,14 @@ export default function App() {
       </aside>
 
       <div className="workspace-area">
-        <header className="topbar">
+        {page !== "live" && <header className="topbar">
           <div className="top-title">
-            <span>{page === "live" ? (recording ? "Live procedure" : sess ? "Session ended" : "Live procedure") : workspace}</span>
+            <span>{workspace}</span>
             <strong>{titles[page]}</strong>
           </div>
           <div className="top-actions">
-            {page === "live" && sess && (
-              <div className="timer"><Icon name="clock" size={16} /><span>{hhmmss(elapsed)}</span></div>
+            {recording && (
+              <div className="timer" title="Session running"><Icon name="clock" size={16} /><span>{hhmmss(elapsed)}</span></div>
             )}
             <button className={`live-pill ${lab.stream ? "" : "off"}`} disabled={lab.starting}
               onClick={() => (lab.stream ? lab.stopCamera() : lab.startCamera())} title={lab.stream ? "Stop camera" : "Start camera"}>
@@ -119,10 +137,10 @@ export default function App() {
             </button>
             <button className="avatar" onClick={() => setPage("settings")} title={workspace}>{initials.slice(0, 2)}</button>
           </div>
-        </header>
+        </header>}
         <div className="page-scroll">
           {page === "live" && (
-            <LabSession lab={lab} health={health}
+            <LabSession lab={lab} health={health} muted={muted} toggleVoice={toggleVoice}
               openRecord={(id) => { setRecordId(id); setPage("records"); }} goProcedures={() => setPage("procedures")} />
           )}
           {page === "procedures" && (

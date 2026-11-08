@@ -18,7 +18,18 @@ export interface LabState {
   error: string | null;
   starting: boolean;
   coach: { text: string; type: SessionEvent["type"]; at: number } | null; // latest spoken line
+  chat: ChatMessage[];
+  asking: boolean;
 }
+
+export interface ChatMessage {
+  id: number;
+  from: "ai" | "user";
+  text: string;
+  kind?: "tip" | "step" | "mistake" | "answer" | "info";
+  feedbackId?: string;
+}
+let chatId = 0;
 
 export function useLab(health: Health | null) {
   const interval = (health?.scribe.interval ?? 3) * 1000;
@@ -33,8 +44,13 @@ export function useLab(health: Health | null) {
   const sessionRef = useRef<LabSession | null>(null);
   const [s, setS] = useState<LabState>({
     stream: null, session: null, lines: [], lastMs: null, model: null, skipped: 0, scribeError: null, error: null, starting: false,
-    coach: null,
+    coach: null, chat: [], asking: false,
   });
+  const lastTip = useRef<string | null>(null);
+  const pushChat = useCallback((msgs: Omit<ChatMessage, "id">[]) => {
+    if (!msgs.length) return;
+    setS((x) => ({ ...x, chat: [...x.chat, ...msgs.map((m) => ({ ...m, id: ++chatId }))].slice(-60) }));
+  }, []);
 
   // Apply a server state (progress, feedback) and speak its events (step done, corrections).
   const applyState = useCallback((st?: LabSession) => {
@@ -44,6 +60,18 @@ export function useLab(health: Health | null) {
     sessionRef.current = { ...(sessionRef.current as LabSession), ...rest, transcript: [] };
     const evs = events ?? [];
     if (evs.length) speak(evs.map((e) => e.voice).join(" "));
+    // chat log: new coach tips, step completions, corrections
+    const msgs: Omit<ChatMessage, "id">[] = [];
+    for (const e of evs) {
+      if (e.type === "mistake" || e.type === "possible_skip") msgs.push({ from: "ai", text: e.voice, kind: "mistake", feedbackId: e.feedback_id });
+      else if (e.type === "step_done" || e.type === "complete" || e.type === "undo") msgs.push({ from: "ai", text: e.voice, kind: "step" });
+    }
+    const tip = rest.coach_tip?.text;
+    if (tip && tip !== lastTip.current) {
+      lastTip.current = tip;
+      msgs.push({ from: "ai", text: tip, kind: "tip" });
+    }
+    if (msgs.length) setTimeout(() => pushChat(msgs), 0);
     setS((x) => ({
       ...x,
       session: x.session ? { ...x.session, ...rest } : x.session,
@@ -141,9 +169,12 @@ export function useLab(health: Health | null) {
     try {
       const sess = await post<LabSession>("/api/sessions", { procedure_id: procedureId });
       sessionRef.current = sess;
-      setS((x) => ({ ...x, session: sess, lines: [], skipped: 0, scribeError: null, lastMs: null, coach: null }));
       const first = sess.procedure.steps[0];
-      if (first) speak(`Let's start. Step 1: ${first.instruction}`);
+      const hello = first ? `Let's start ${sess.procedure.title}. Step 1: ${first.instruction}` : "Let's start.";
+      lastTip.current = sess.coach_tip?.text ?? null;
+      setS((x) => ({ ...x, session: sess, lines: [], skipped: 0, scribeError: null, lastMs: null, coach: null,
+        chat: [{ id: ++chatId, from: "ai", text: hello, kind: "info" }] }));
+      speak(hello);
     } catch (e) {
       setS((x) => ({ ...x, error: `Could not start the session: ${(e as Error).message}` }));
     }
@@ -170,6 +201,22 @@ export function useLab(health: Health | null) {
       setS((x) => ({ ...x, error: (e as Error).message }));
     }
   }, [applyState]);
+  const ask = useCallback(async (question: string) => {
+    const sess = sessionRef.current;
+    const q = question.trim();
+    if (!sess || !q) return;
+    pushChat([{ from: "user", text: q }]);
+    setS((x) => ({ ...x, asking: true }));
+    try {
+      const r = await post<{ answer: string }>(`/api/sessions/${sess.session_id}/ask`, { question: q });
+      pushChat([{ from: "ai", text: r.answer, kind: "answer" }]);
+      speak(r.answer);
+    } catch (e) {
+      pushChat([{ from: "ai", text: `Sorry, I couldn't answer that: ${(e as Error).message}`, kind: "info" }]);
+    } finally {
+      setS((x) => ({ ...x, asking: false }));
+    }
+  }, [pushChat]);
   const markDone = useCallback(() => act("steps/done"), [act]);
   const undo = useCallback(() => act("steps/undo"), [act]);
   const dismiss = useCallback((id: string) => act(`feedback/${id}/dismiss`), [act]);
@@ -191,5 +238,5 @@ export function useLab(health: Health | null) {
 
   useEffect(() => () => s.stream?.getTracks().forEach((t) => t.stop()), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { ...s, startCamera, stopCamera, startSession, endSession, closeSession, resync, markDone, undo, dismiss };
+  return { ...s, startCamera, stopCamera, startSession, endSession, closeSession, resync, markDone, undo, dismiss, ask };
 }

@@ -73,6 +73,8 @@ def start(procedure):
         "last_activity": now,   # last scribe tick / manual action (abandoned tabs stop ticking)
         "busy": threading.Lock(),
     }
+    if steps and _is_paper(steps[0]):
+        s["coach_tip"] = {"step": steps[0]["number"], "text": PAPER_TIP, "time": utc_timestamp(now)}
     with _lock:
         _sessions[sid] = s
     return s
@@ -137,6 +139,13 @@ def _snapshot(s):
     return sid
 
 
+PAPER_TIP = "This step is done on paper or a screen, so the camera can't check it. Tap Mark step done when you're finished."
+
+
+def _is_paper(step):
+    return step.get("camera_checkable") is False
+
+
 def _say(s, kind, text, **extra):
     s["events"].append({"type": kind, "voice": text, **extra})
 
@@ -155,7 +164,11 @@ def _advance(s, now, evidence, method):
     if s["current"] < len(steps):
         nxt = s["steps_state"][s["current"]]
         nxt.update(status="current", started_elapsed=round(now - s["t0"], 1))
-        _say(s, "step_done", f"Step {steps[i]['number']} complete. Next: {steps[s['current']]['instruction']}",
+        nstep = steps[s["current"]]
+        paper = " This one's on paper: tap Mark step done when you're finished." if _is_paper(nstep) else ""
+        if _is_paper(nstep):
+            s["coach_tip"] = {"step": nstep["number"], "text": PAPER_TIP, "time": utc_timestamp(now)}
+        _say(s, "step_done", f"Step {steps[i]['number']} complete. Next: {nstep['instruction']}{paper}",
              step=steps[i]["number"])
     else:
         s["completed_at"] = utc_timestamp(now)
@@ -276,7 +289,11 @@ def scribe_frames(sid, frames, now=None):
         s["last_error"] = None
         entry, new = _append(s, line, now)
 
-        if s["current"] < len(s["procedure"]["steps"]):
+        cur_step = s["procedure"]["steps"][s["current"]] if s["current"] < len(s["procedure"]["steps"]) else None
+        if cur_step is not None and _is_paper(cur_step):
+            # paper/screen step: the camera can't judge it - wait for "Mark step done"
+            s["coach_tip"] = {"step": cur_step["number"], "text": PAPER_TIP, "time": utc_timestamp(now)}
+        elif cur_step is not None:
             try:
                 if config.MOCK_MODE:
                     r = matcher.mock_check(s["procedure"]["steps"], s["current"], tag, line)

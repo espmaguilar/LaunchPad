@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import coach
 import config
 import ingest
 import procedures
@@ -108,16 +109,24 @@ def upload_manual(req: ManualUpload):
 
     warnings = [warning] if warning else []
     source = None
+    if len(text.strip()) < config.MIN_MANUAL_CHARS:
+        warnings.append(f"This PDF has almost no text ({len(text.strip())} characters) - it looks like a diagram "
+                        "or figure, not a written procedure. Upload the lab manual itself, or add the steps below.")
     try:
         raw, source = procedures.ai_extract(text)
+    except procedures.NoStepsFound:
+        raw = {"title": Path(req.filename).stem, "steps": []}
+        if len(text.strip()) >= config.MIN_MANUAL_CHARS:  # the low-text warning above already explains it
+            warnings.append("No procedure steps were found in this document. Add them below, or upload the lab "
+                            "manual that contains the instructions.")
     except procedures.ProcedureError as e:
         try:
             raw = procedures.heuristic_extract(text)
             warnings.append(f"{e}. Steps were read from the numbered list instead: add each step's "
                             "expected action and visual cues before approving.")
-        except procedures.ProcedureError as e2:
+        except procedures.ProcedureError:
             raw = {"title": Path(req.filename).stem, "steps": []}
-            warnings.append(f"{e}. {e2}")
+            warnings.append(f"{e}, and no numbered steps were found. Add the steps below.")
     draft = procedures.normalize(raw)
     return {"source_key": key, "filename": req.filename, "extraction": method, "text_chars": len(text),
             "text_preview": text[:1500], "generated_by": source, "warnings": warnings, **draft}
@@ -294,6 +303,23 @@ def session_snapshot(sid: str, snap_id: str):
     if data is None:
         raise HTTPException(404, "snapshot not found")
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"})
+
+
+class Question(BaseModel):
+    question: str
+
+
+@app.post("/api/sessions/{sid}/ask")
+def ask_coach(sid: str, req: Question):
+    """Ask LabScribe: a short answer using the procedure, current step and what the camera saw."""
+    s = _session_or_404(sid)
+    try:
+        text, model = coach.answer(s, req.question)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except (ClientError, BotoCoreError) as e:
+        raise aws_error(e)
+    return {"answer": text, "model": model}
 
 
 @app.post("/api/sessions/{sid}/end")

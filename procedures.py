@@ -20,23 +20,36 @@ Return ONLY a JSON object, no prose, no markdown fences, exactly this shape:
 {"title": "<experiment name as written>",
  "steps": [
    {"number": 1,
+    "section": "<part/section heading this step belongs to, e.g. 'Part 1: Standing waves in strings', or ''>",
     "instruction": "<the step, as the manual says it, one or two sentences>",
-    "expected_action": "<what the camera should SEE when the step is done: short, visual, <= 12 words>",
+    "camera_checkable": <true if a camera on the bench could SEE this step being done (handling equipment,
+                         adjusting, measuring with a ruler, pouring, connecting); false for calculations,
+                         plotting/graphing, sketching, writing answers or reading values off a screen only>,
+    "expected_action": "<what the camera should SEE when the step is done: short, visual, <= 12 words; '' if not camera_checkable>",
     "visual_cues": ["<objects, colors, containers visible in this step>"],
     "safety_critical": <true if the manual marks it as a safety step, or it involves PPE, heat, sharps or chemicals that can splash>,
     "required_ppe": ["<PPE the manual requires for this step, e.g. 'safety goggles', 'gloves', 'lab coat'>"]}
  ]}
 
 Rules:
-- One entry per physical action, in the manual's order. Skip purely informational text (background, theory).
-- expected_action must be observable by a camera (e.g. "blue food coloring dripped into the cup"), not a thought.
-- visual_cues: 1-5 short nouns/colors ("clear cup", "measuring spoon", "white powder").
-- required_ppe: only PPE the manual states; [] if none. Never invent PPE.
-- Never invent steps that are not in the manual."""
+- Real lab manuals mix theory, equations, data tables, questions and procedure. Extract ONLY the things the
+  student actually does, in the manual's order. Skip background, theory, equations, tables to fill in and
+  pre-lab/post-lab questions unless they are an action ("Sketch the three lowest modes" is a paper step).
+- One entry per action. Split "Do A, then B" into two steps when both are separate physical actions.
+- expected_action must be observable by a camera (e.g. "blue food coloring dripped into the cup",
+  "ruler held along the string"), not a thought.
+- visual_cues: 1-5 short nouns/colors ("clear cup", "function generator", "white powder").
+- required_ppe: only PPE the manual states; [] if none. Never invent PPE or steps.
+- If the document contains no procedure at all (e.g. it's only a diagram or a list of formulas), return
+  {"title": "<title>", "steps": []}."""
 
 
 class ProcedureError(Exception):
     pass
+
+
+class NoStepsFound(ProcedureError):
+    """Bedrock read the document fine but found no procedure in it (e.g. a diagram)."""
 
 
 def slug(name):
@@ -62,8 +75,8 @@ def _parse(text):
     if start < 0 or end < 0:
         raise ValueError("no JSON object found")
     data = json.loads(cleaned[start:end + 1])
-    if not isinstance(data.get("steps"), list) or not data["steps"]:
-        raise ValueError('"steps" must be a non-empty list')
+    if not isinstance(data.get("steps"), list):
+        raise ValueError('"steps" must be a list')
     for i, s in enumerate(data["steps"], 1):
         if not isinstance(s, dict) or not str(s.get("instruction") or "").strip():
             raise ValueError(f"step {i} has no instruction")
@@ -78,7 +91,10 @@ def ai_extract(text):
     try:
         out = _converse(messages)
         try:
-            return _parse(out), f"Amazon Bedrock ({config.BEDROCK_MODEL_ID})"
+            data = _parse(out)
+            if not data["steps"]:
+                raise NoStepsFound("Bedrock found no procedure steps in this document")
+            return data, f"Amazon Bedrock ({config.BEDROCK_MODEL_ID})"
         except (ValueError, json.JSONDecodeError) as e:
             messages += [
                 {"role": "assistant", "content": [{"text": out}]},
@@ -86,7 +102,10 @@ def ai_extract(text):
                                                       "Return ONLY the JSON object."}]},
             ]
             out = _converse(messages)
-            return _parse(out), f"Amazon Bedrock ({config.BEDROCK_MODEL_ID}, after 1 retry)"
+            data = _parse(out)
+            if not data["steps"]:
+                raise NoStepsFound("Bedrock found no procedure steps in this document")
+            return data, f"Amazon Bedrock ({config.BEDROCK_MODEL_ID}, after 1 retry)"
     except (ValueError, json.JSONDecodeError) as e:
         raise ProcedureError(f"Bedrock did not return valid JSON after a retry: {e}")
     except (ClientError, BotoCoreError) as e:
@@ -127,6 +146,8 @@ def heuristic_extract(text):
         s["safety_critical"] = any(w in low for w in SAFETY_WORDS)
         s["expected_action"] = ""
         s["visual_cues"] = []
+        s["camera_checkable"] = not re.match(r"^(calculate|compute|plot|graph|sketch|draw|record|write|answer|"
+                                             r"determine|find|use your|derive|explain)\b", low)
     if not steps:
         raise ProcedureError("No numbered steps found. Add them manually below.")
     return {"title": title, "steps": steps}
@@ -155,8 +176,12 @@ def normalize(raw):
         instr = re.sub(r"\s+", " ", str(s.get("instruction") or "")).strip()
         if not instr:
             continue
+        camera = s.get("camera_checkable")
+        camera = True if camera is None else _bool(camera)
         steps.append({
+            "section": re.sub(r"\s+", " ", str(s.get("section") or "")).strip()[:80],
             "instruction": instr[: config.MAX_INSTRUCTION_CHARS],
+            "camera_checkable": camera,
             "expected_action": str(s.get("expected_action") or "").strip()[: config.MAX_EXPECTED_ACTION_CHARS],
             "visual_cues": _str_list(s.get("visual_cues")),
             "safety_critical": _bool(s.get("safety_critical")),

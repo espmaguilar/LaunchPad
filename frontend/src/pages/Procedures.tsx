@@ -21,7 +21,7 @@ const readAsDataURL = (blob: Blob) =>
     r.onerror = () => fail(r.error);
     r.readAsDataURL(blob);
   });
-const blankStep = (n: number): Step => ({ number: n, instruction: "", expected_action: "", visual_cues: [], safety_critical: false, required_ppe: [] });
+const blankStep = (n: number): Step => ({ number: n, section: "", camera_checkable: true, instruction: "", expected_action: "", visual_cues: [], safety_critical: false, required_ppe: [] });
 const renumber = (steps: Step[]) => steps.map((s, i) => ({ ...s, number: i + 1 }));
 const splitList = (v: string) => v.split(",").map((x) => x.trim()).filter(Boolean);
 
@@ -210,7 +210,9 @@ function Review({ editing, setEditing, busy, onApprove, onCancel }: {
     setOpen((o) => (o === i ? j : o === j ? i : o));
   };
   const safety = steps.filter((s) => s.safety_critical).length;
-  const visual = steps.filter((s) => s.expected_action.trim()).length;
+  const camSteps = steps.filter((s) => s.camera_checkable !== false);
+  const visual = camSteps.filter((s) => s.expected_action.trim()).length;
+  const paper = steps.length - camSteps.length;
   const m = editing.meta;
 
   return (
@@ -247,11 +249,17 @@ function Review({ editing, setEditing, busy, onApprove, onCancel }: {
                   <StepEditor step={item} onChange={(p) => patch(index, p)} />
                 ) : (
                   <>
+                    {item.section && (index === 0 || steps[index - 1].section !== item.section) && <div className="review-section">{item.section}</div>}
                     <div className="review-title">
                       <h3>{item.instruction || <em className="placeholder">New step — click edit</em>}</h3>
                       {item.safety_critical && <span className="critical"><Icon name="shield" size={12} /> Safety-critical</span>}
+                      {item.camera_checkable === false && <span className="paper-badge"><Icon name="edit" size={11} /> Paper step</span>}
                     </div>
-                    <p className={item.expected_action ? "" : "missing"}><b>What the camera looks for</b>{item.expected_action || "Not set — the camera needs this to know when the step is done"}</p>
+                    {item.camera_checkable === false ? (
+                      <p className="paper-note"><b>Not camera-checked</b>Done on paper or a screen — the student taps Mark step done</p>
+                    ) : (
+                      <p className={item.expected_action ? "" : "missing"}><b>What the camera looks for</b>{item.expected_action || "Not set — the camera needs this to know when the step is done"}</p>
+                    )}
                     <div className="chips">
                       {item.visual_cues.map((c) => <span key={c}>{c}</span>)}
                       {item.required_ppe.map((p) => <span className="ppe" key={p}><Icon name="shield" size={11} /> PPE: {p}</span>)}
@@ -277,7 +285,11 @@ function Review({ editing, setEditing, busy, onApprove, onCancel }: {
         <p>Students will be guided through all {steps.length} steps with real-time camera confirmation.</p>
         <div>
           <Icon name="camera" />
-          <span><strong>{visual} visual check{visual === 1 ? "" : "s"}</strong><small>{visual < steps.length ? `${steps.length - visual} step(s) still need a camera cue` : "Camera-detectable cues"}</small></span>
+          <span><strong>{visual} visual check{visual === 1 ? "" : "s"}</strong><small>{visual < camSteps.length ? `${camSteps.length - visual} camera step(s) still need a cue` : "Camera-detectable cues"}</small></span>
+        </div>
+        <div>
+          <Icon name="edit" />
+          <span><strong>{paper} paper step{paper === 1 ? "" : "s"}</strong><small>Calculations, plots, sketches — student taps Mark done</small></span>
         </div>
         <div>
           <Icon name="shield" />
@@ -298,11 +310,16 @@ function StepEditor({ step, onChange }: { step: Step; onChange: (p: Partial<Step
   return (
     <div className="step-editor">
       <label>Instruction<textarea rows={2} value={step.instruction} autoFocus onChange={(e) => onChange({ instruction: e.target.value })} /></label>
+      <label>Section <small>optional, e.g. "Part 1: Strings"</small><input value={step.section ?? ""} onChange={(e) => onChange({ section: e.target.value })} /></label>
       <label>What the camera looks for<input value={step.expected_action} placeholder="e.g. blue food coloring dripped into the cup"
         onChange={(e) => onChange({ expected_action: e.target.value })} /></label>
       <label>Visual cues <small>comma-separated</small><input value={cues} placeholder="clear cup, blue liquid"
         onChange={(e) => { setCues(e.target.value); onChange({ visual_cues: splitList(e.target.value) }); }} /></label>
       <div className="editor-row">
+        <button type="button" className={`ppe-chip ${step.camera_checkable !== false ? "on" : ""}`} aria-pressed={step.camera_checkable !== false}
+          onClick={() => onChange({ camera_checkable: step.camera_checkable === false })} title="Can the camera see this step being done?">
+          <Icon name="camera" size={12} /> {step.camera_checkable === false ? "Paper step" : "Camera checks it"}
+        </button>
         <button type="button" className={`safety-toggle ${step.safety_critical ? "on" : ""}`} aria-pressed={step.safety_critical}
           onClick={() => onChange({ safety_critical: !step.safety_critical })}><Icon name="shield" size={12} /> Safety-critical</button>
         {COMMON_PPE.map((p) => {

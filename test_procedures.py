@@ -35,12 +35,21 @@ assert calls[1]["messages"][-1]["role"] == "user"   # retry asks again, no assis
 
 # 1b. two bad replies -> clear error (upload falls back to the heuristic parser)
 calls.clear()
-replies[:] = ["nope", '{"steps": []}']
+replies[:] = ["nope", "still nope"]
 try:
     procedures.ai_extract("manual text")
     raise AssertionError("expected ProcedureError")
 except procedures.ProcedureError as e:
-    assert "after a retry" in str(e)
+    assert "after a retry" in str(e) and not isinstance(e, procedures.NoStepsFound)
+
+# 1c. valid JSON but no steps (a diagram-only PDF) -> NoStepsFound, no retry
+calls.clear()
+replies[:] = ['{"title": "String modes", "steps": []}']
+try:
+    procedures.ai_extract("n=1 lambda=2L AN N")
+    raise AssertionError("expected NoStepsFound")
+except procedures.NoStepsFound:
+    assert len(calls) == 1
 
 # 2. normalize: whitespace, duplicate cues, string booleans, lower-case PPE, renumbering
 d = procedures.normalize(raw)
@@ -83,5 +92,15 @@ assert [x["title"] for x in store.list_procedures()] == ["Lab v2"]
 assert store.get_procedure("lab-1")["steps"][0]["number"] == 1
 store.delete_procedure("lab-1")
 assert store.list_procedures() == [] and store.get_procedure("lab-1") is None
+
+# 6. camera_checkable + section carried through; paper steps get no expected action requirement
+n = procedures.normalize({"title": "Lab 7", "steps": [
+    {"section": "Part 1: Strings", "instruction": "Measure the string length.", "camera_checkable": True, "expected_action": "ruler along string"},
+    {"section": "Part 1: Strings", "instruction": "Calculate the wave speed.", "camera_checkable": "false"},
+    {"instruction": "Connect the speaker."}]})
+assert [x["camera_checkable"] for x in n["steps"]] == [True, False, True]       # missing -> camera-checkable
+assert n["steps"][0]["section"] == "Part 1: Strings" and n["steps"][2]["section"] == ""
+h = procedures.normalize(procedures.heuristic_extract("Lab\n1. Measure the length.\n2. Calculate the speed.\n3. Plot the data."))
+assert [x["camera_checkable"] for x in h["steps"]] == [True, False, False]
 
 print("all procedure checks passed")

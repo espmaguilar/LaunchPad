@@ -13,6 +13,8 @@ export interface Health {
 }
 export interface Step {
   number: number;
+  section?: string;
+  camera_checkable?: boolean;
   instruction: string;
   expected_action: string;
   visual_cues: string[];

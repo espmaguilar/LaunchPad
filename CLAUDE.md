@@ -62,6 +62,19 @@ after each one with test steps for the user.
   keeps its last 40 checks (`checks`) for debugging; `/api/health` reports `advance_mode`.
   Mock: `scribe.MOCK_SCRIPT` lines carry demo-step tags (incl. a vinegar-before-coloring mistake) and
   `matcher.mock_check` is deterministic.
+- [x] Ingestion for real manuals (2026-11-08): prompt extracts only student actions (skips theory/tables/
+  questions), adds `section` and `camera_checkable` (calculate/plot/sketch/write = paper step, no camera cue).
+  Paper steps: matcher skipped, coach + voice say "tap Mark step done". Diagram/scan PDFs (< MIN_MANUAL_CHARS
+  of text, e.g. Task_1.1_String_Modes: 75 chars) or Bedrock returning `steps: []` -> `NoStepsFound` + one clear
+  warning (was a confusing "steps must be a non-empty list" JSON error). Tested on the user's "Lab 7 - Standing
+  Waves" (PHYS 32): 15 steps, Part 1/Part 2 sections, 6 paper steps.
+- [x] Ask LabScribe (`coach.py`, `POST /api/sessions/{id}/ask`): Bedrock answers questions with the procedure,
+  current step, recent transcript and open feedback; 1-3 sentences, never invents steps ("the procedure doesn't
+  specify ... ask your instructor"). Answers are spoken.
+- [x] UI v3 (third Figma export): immersive Live Session (instruction header with procedure picker - switching
+  mid-session ends + restarts after confirm -, full-bleed camera, Scribe overlay, floating Undo/Mark done/camera
+  controls, steps drawer, coach chat = tips + step messages + mistake cards + Q&A), collapsible sidebar with
+  "Feed in a lab manual". Chat log lives in `useLab` so it survives page changes.
 - [ ] **D. Safety + deviations**: before safety_critical steps, Bedrock vision checks required PPE;
   block advancing + "Put on <gear> before continuing." Log deviations (skipped, out of order,
   wrong action, PPE missing, mistakes) with snapshot to S3 + DynamoDB.

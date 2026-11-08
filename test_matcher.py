@@ -193,6 +193,22 @@ sessions.apply_check(s, check("done", tip="Great."), t0 + 70)
 assert s["current"] == 1 and s["coach_tip"] is None              # new step: fresh start
 assert len(s["checks"]) == 5 and s["checks"][-1]["status"] == "done"
 assert matcher.normalize({"status": "done", "confidence": 1, "tip": "  Nice   work. "})["tip"] == "Nice work."
+# 12. Paper steps (calculate/plot): matcher skipped, coach says "Mark step done"; voice mentions it
+config.LENIENT_ADVANCE, config.DONE_MIN_CONFIDENCE, config.DONE_CHECKS = True, 0.5, 1
+paper_proc = {"procedure_id": "p", "title": "Lab 7", "steps": [
+    {"number": 1, "instruction": "Measure the string.", "camera_checkable": True, "expected_action": "ruler"},
+    {"number": 2, "instruction": "Calculate the speed.", "camera_checkable": False, "expected_action": ""},
+    {"number": 3, "instruction": "Connect the speaker.", "camera_checkable": True, "expected_action": "speaker"}]}
+s = sessions.start(paper_proc)
+sessions.apply_check(s, check("done"), s["t0"] + 3)
+ev = [e for e in s["events"] if e["type"] == "step_done"][-1]
+assert s["current"] == 1 and "on paper" in ev["voice"] and "Mark step done" in s["coach_tip"]["text"]
+config.MOCK_MODE = True   # mock scribe lines; the paper step must still never auto-advance
+for i in range(4):
+    sessions.scribe_frames(s["session_id"], [b"f"], now=s["t0"] + 6 + 3 * i)
+assert s["current"] == 1                                         # never auto-advanced by the camera
+st = sessions.mark_done(s["session_id"])
+assert st["current"] == 2 and st["steps_state"][1]["method"] == "manual"
 config.LENIENT_ADVANCE = False
 
 print("all matcher checks passed")

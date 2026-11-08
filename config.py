@@ -29,6 +29,7 @@ MAX_PDF_BYTES = 10 * 1024 * 1024
 MAX_STEPS = 40
 MAX_INSTRUCTION_CHARS = 300
 MAX_EXPECTED_ACTION_CHARS = 120
+MIN_MANUAL_CHARS = 300          # less text than this -> probably a diagram/scan, not a procedure
 # PPE names the vision check understands (free text is allowed too)
 COMMON_PPE = ["safety goggles", "gloves", "lab coat", "face mask"]
 
