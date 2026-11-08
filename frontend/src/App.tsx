@@ -128,7 +128,7 @@ export default function App() {
               <div className="timer" title="Session running"><Icon name="clock" size={16} /><span>{hhmmss(elapsed)}</span></div>
             )}
             <button className={`live-pill ${lab.stream ? "" : "off"}`} disabled={lab.starting}
-              onClick={() => (lab.stream ? lab.stopCamera() : lab.startCamera())} title={lab.stream ? "Stop camera" : "Start camera"}>
+              onClick={() => (lab.stream ? lab.stopCamera() : void lab.startCamera())} title={lab.stream ? "Stop camera" : "Start camera"}>
               <i /> <span>{lab.starting ? "Starting…" : lab.stream ? "Camera live" : "Camera off"}</span>
             </button>
             <button className={`voice-pill ${muted ? "" : "on"}`} onClick={toggleVoice} aria-pressed={!muted}>
@@ -144,7 +144,7 @@ export default function App() {
               openRecord={(id) => { setRecordId(id); setPage("records"); }} goProcedures={() => setPage("procedures")} />
           )}
           {page === "procedures" && (
-            <Procedures health={health} startSession={async (id) => { await lab.startSession(id); setPage("live"); }} />
+            <Procedures health={health} startSession={async (id) => { setPage("live"); await lab.startSession(id); }} />
           )}
           {page === "records" && <Records selected={recordId} setSelected={setRecordId} />}
           {page === "instructor" && <Instructor openRecord={(id) => { setRecordId(id); setPage("records"); }} />}

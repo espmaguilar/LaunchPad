@@ -55,8 +55,23 @@ after each one with test steps for the user.
   yes/no `confirm_done` call (only when in_progress) checks the step's DONE-WHEN condition; it must see the
   action/result, not just objects. "wrong_material" that is a later step's material -> `refine` makes it
   wrong_order. Real-model scenario suite: 28/28 after these fixes (avg 0.9 s per check).
-  Default LENIENT_ADVANCE (config): anything resembling the step (done / in_progress / next_step_detected,
-  >= 0.5, one check) advances; mistakes stay strict. Strict mode = old behaviour.
+  Advance modes (`/api/health.advance_mode`, env ADVANCE_MODE). DEFAULT = "instant" (2026-11-08, user: "as soon as
+  a line like that comes, the next step comes ... when a human does something it's instant"): ONE matcher check with
+  done / in_progress / next_step_detected >= DONE_MIN_CONFIDENCE (0.55), no mistake, AND a transcript line since the
+  step started names a KEY OBJECT (`sessions._key_words`: key_terms objects + visual cues + (aliases), minus generic
+  scenery and BODY PARTS like head/ears, plus _ALIASES e.g. iphone->phone). "Lifting hands high" can't tick
+  "put on headphones". No vision check, no min time. `checks[].confirm` says which line matched.
+  Previous default "careful" (2026-11-08, user: "things are done in haste" -
+  "put on headphones" ticked when hands were lifted high): matcher "done" >= DONE_MIN_CONFIDENCE (0.55) OR "in_progress" >=
+  IN_PROGRESS_MIN_CONFIDENCE (0.55, only when the frame is really checked - compound steps like "unscrew the cap.
+  Set the cap down" stayed in_progress forever while the transcript said "Unscrewing cap"), no
+  mistake, >= MIN_STEP_SECONDS (5) on the step (real mode only), and each such check confirmed by
+  `matcher.finished_check` (FINISH_PROMPT: MAIN action done or clearly being done on the KEY object, using the
+  scribe lines + image together; follow-ups like "set it down" not required; NOT done when the image contradicts the
+  lines or only hands are raised) >= FINISH_MIN_CONFIDENCE (0.55; user asked for 55%), on DONE_CHECKS (2) checks in a row. Result logged as `confirm` in
+  `checks`. Real photos: 12/12 (opening a bottle + "Unscrewing cap" = yes; bottle alone / hands up = no; headphones
+  on = yes; hands up = no even when a scribe line claims headphones).
+  LENIENT_ADVANCE=true in .env restores the old lenient mode; CONFIRM_WITH_VISION=false = plain strict.
   Coach suggestions: matcher also returns `tip` (always); Coach panel shows the latest; spoken when the
   student has been on a step >= STUCK_SECONDS (20 s), at most every TIP_REPEAT_SECONDS (45 s). Each session
   keeps its last 40 checks (`checks`) for debugging; `/api/health` reports `advance_mode`.
@@ -75,6 +90,57 @@ after each one with test steps for the user.
   mid-session ends + restarts after confirm -, full-bleed camera, Scribe overlay, floating Undo/Mark done/camera
   controls, steps drawer, coach chat = tips + step messages + mistake cards + Q&A), collapsible sidebar with
   "Feed in a lab manual". Chat log lives in `useLab` so it survives page changes.
+- [x] "Feeling confused?" (`breakdown.py`, `POST /api/sessions/{id}/confused {yes}`): on a camera step for
+  CONFUSED_AFTER_SECONDS (25, env-overridable) -> `confused_offer` event -> pop-up. No = never again for that
+  step. Yes = Bedrock splits the step into 2-5 sub-steps each with its own camera check (last one = the step's
+  done-condition); the session checks the current sub-step with `matcher.confirm_done` instead of the matcher;
+  all done -> step unlocks. Manual sub-step tick: `POST /substeps/done`.
+  Sub-steps are checked by VISION (`matcher.substep_check`: latest frame + recent lines + parent step for aliases,
+  image-first prompt; text-only confirm_done kept failing on aliases/compound conditions). Real test 10/10.
+  Exit: `POST /substeps/exit` (Exit button on the panel) and "Got it" on any chat card also exits the breakdown.
+- [x] Coach = chatbot only: no tips (removed from the matcher prompt and the chat), no spoken tips. Chat keeps
+  Q&A + mistake cards; step completions are toasts.
+- [x] Accuracy: a step's matcher window only contains lines AFTER the step started (old bug: step 2 ticked on
+  step 1's "placing headphones" line); nothing is judged until the new step has its own line. Each transcript
+  line keeps its camera frame; step/feedback snapshots = frame of the evidence line. "[00:16]" stripped.
+- [x] Scribe scans the whole frame and returns `focus` [x,y,w,h]; the live callout follows it.
+- [x] Lab Records + chat snapshots open an in-page carousel (`Lightbox` in ui.tsx), not a new tab.
+- [x] Hand tracking (`frontend/src/hands.ts`): MediaPipe Hand Landmarker 0.10.14 from jsDelivr (GPU, CPU
+  fallback, 2 hands), adaptive throttle (<= 15 fps, <= ~1/3 of main-thread time - unthrottled CPU detection
+  starved the scribe timers). Rolling 3 s features: pouring (tilt > 45 deg for > 1.5 s), stirring (fingertip
+  sweep >= 1.5 turns), pinch count, side of frame, idle/moving. Summary sent as `motion` with each scribe
+  request and added to the scribe prompt. 21-point skeleton overlay + "Hand tracking" chip with Show/Hide.
+  Handedness is swapped (MediaPipe assumes mirrored selfie frames). Fails silently -> app works without it.
+  Scene tracking: also MediaPipe Object Detector (EfficientDet-Lite0, COCO classes, ~2.5/s, scenery like person/
+  laptop ignored) -> amber boxes with labels, "held by right hand" when >= 3 hand landmarks are inside a box. Objects
+  are added to the `motion` summary ("objects: bottle (held by right hand, center), cup (left side)"). The scribe
+  prompt says the IMAGE is the source of truth and the whole scene matters, not just hands. Matcher/sub-step
+  checks never see the overlay.
+  Objects are tracked (same label + overlap/near, smoothed, kept 1.5 s after last seen -> faded, no flicker); model
+  threshold 0.3, boxes < 0.45 shown as "maybe" only when nothing surer is visible AND they are large or near a hand.
+  Background filters (user: "too sensitive, focusing on background movements"): boxes < 1.2% of the frame dropped
+  unless held, new boxes need 2 hits, motion only for held objects (> 6%) or big moves (> 15%), hands with a landmark
+  span < 0.09 of the frame ignored (background people), hand confidences 0.6. Scribe prompt: student's work area
+  only; background people/screens/doors, camera shake and lighting are never the action. Each object gets height vs the
+  "bench line" (lowest unheld object): on the bench / raised / lifted high; motion over 1.5 s (moving up/down/...);
+  up to 2 relations (above / touching / left of / right of another object). Shown on the box label + sent to the scribe.
+- [x] Instruction key words (user tip: "twist the bottle cap open" -> watch twist + bottle cap, not the shirt/toy):
+  `scribe.key_terms(step)` (deterministic, no model call): first verb (+ particle: "put on") and later known verbs
+  ("and stir") -> action; visual_cues, else noun runs of the instruction minus stop/abstract words -> objects.
+  `sessions._focus_terms` uses the current sub-step in step-by-step mode. Sent to the scribe as "Watch for: action
+  'twist, open' with bottle cap." (prompt: look for those first, say when the action is NOT happening, leave out
+  clothes/toys/furniture, never claim the action unless seen). `focus_terms` in public state -> `hands.setFocusTerms`:
+  matching objects (COCO label -> synonyms, e.g. bottle ~ cap/lid/flask, cup ~ beaker/glass/tube) get a solid teal
+  "★" box; others a faint unlabeled outline and are listed as "ignored" in the summary; no match -> all shown as before.
+  Chip shows "Watching: twist, open · bottle cap". Not yet verified on real frames.
+- [x] Camera first: `startSession` awaits camera permission (startCamera -> bool) BEFORE POST /api/sessions and the
+  spoken intro, so the clock and voice start only after "Allow". Denied -> session still starts (mock / Mark done).
+  "Start session" on Procedures switches to Live first so the prompt appears over the camera placeholder.
+- [x] Restart step (`POST /api/sessions/{id}/steps/restart`, circular-arrow button next to Undo): the current step's
+  start time resets so earlier lines stop counting; streaks, breakdown, the confused offer and mistake warnings for
+  that step reset.
+- [x] Voice: ElevenLabs when ELEVENLABS_API_KEY is in .env (voice ELEVENLABS_VOICE_ID, default
+  dmWfLQZJq7wNPv9WmtiM, model eleven_turbo_v2_5), cached; any ElevenLabs error -> Polly. `/api/health.voice`.
 - [ ] **D. Safety + deviations**: before safety_critical steps, Bedrock vision checks required PPE;
   block advancing + "Put on <gear> before continuing." Log deviations (skipped, out of order,
   wrong action, PPE missing, mistakes) with snapshot to S3 + DynamoDB.
@@ -113,7 +179,7 @@ after each one with test steps for the user.
   every page), `pages/LabSession.tsx`, `pages/Procedures.tsx`, `pages/Records.tsx`, `pages/Instructor.tsx` (list, upload, processing, review editor),
   `pages/Settings.tsx`, `voice.ts` (speak + mute + Safari unlock), `design.css` (Figma design) +
   `app.css` (additions). Rebuild: `cd frontend && npm run build`.
-- Tests: `test_procedures.py`, `test_scribe.py`, `test_matcher.py`, `test_parser.py`.
+- Tests: `test_procedures.py`, `test_scribe.py`, `test_matcher.py`, `test_voice.py`, `test_parser.py`.
 
 ## Notes
 - Real test 2026-11-08: demo manual -> Textract + Llama 4 Scout in 6.2 s, 6 steps with visual expected

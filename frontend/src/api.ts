@@ -52,6 +52,8 @@ export interface ScribeLine {
   model: string;
   ms: number;
   repeat: number;
+  focus?: [number, number, number, number] | null;
+  frame_id?: string | null;
   last_time?: string;
   last_elapsed?: number;
 }
@@ -88,7 +90,7 @@ export interface MatchCheck {
   time: string;
 }
 export interface SessionEvent {
-  type: "step_done" | "complete" | "mistake" | "possible_skip" | "undo" | "tip";
+  type: "step_done" | "complete" | "mistake" | "possible_skip" | "undo" | "tip" | "confused_offer" | "breakdown" | "substep_done";
   voice: string;
   step?: number;
   feedback_id?: string;
@@ -121,6 +123,13 @@ export interface LabSession {
   complete: boolean;
   active: boolean;
   coach_tip: { step: number; text: string; time: string } | null;
+  focus_terms?: { action: string; objects: string[] }; // the current (sub-)step's key action + objects
+  confused: Record<string, "offered" | "declined" | "accepted">;
+  breakdown: {
+    step: number;
+    current: number;
+    items: { instruction: string; expected_action: string; done: boolean; done_elapsed: number | null; evidence: string; method?: string }[];
+  } | null;
   checks: { elapsed: number; step: number; status: string; confidence: number; mistake: boolean; evidence: string; tip: string }[];
   streaks: { done: number; skip: number; mistake: number };
   events?: SessionEvent[];

@@ -47,15 +47,11 @@ mistake=false.
 - Tone: encouraging coach, never harsh. Both are "" when mistake is false.
 - expected_seen: true if the transcript shows what the CURRENT step's "DONE WHEN the camera sees" describes
   (judge just that one visual condition, nothing else), else false.
-- tip: ALWAYS give one short, friendly coaching suggestion (max 15 words) for what the student should do
-  next on the CURRENT step, based on what the transcript shows. Examples: "Pick up the water bottle so the
-  camera can see it.", "Nice — now hold the bottle in front of your face.", "Hold the cup still while you add
-  the drops." Never repeat the instruction word for word; never harsh.
 - evidence: the transcript words that justify the status (short quote), or "".
 - confidence: 0.0-1.0, calibrated (0.5 = unsure).
 
 Return ONLY JSON, no prose, no markdown:
-{"status": "...", "expected_seen": false, "confidence": 0.0, "evidence": "...", "tip": "...", "mistake": false,
+{"status": "...", "expected_seen": false, "confidence": 0.0, "evidence": "...", "mistake": false,
  "mistake_type": "", "what_went_wrong": "", "how_to_fix": ""}"""
 
 
@@ -75,7 +71,7 @@ def build_prompt(steps, current_idx, transcript_lines):
         "Procedure:\n" + "\n".join(_step_line(s) for s in steps) +
         f"\n\nCURRENT step: {_step_line(cur)}" +
         (f"\nNEXT step: {_step_line(nxt)}" if nxt else "\nNEXT step: (none, this is the last step)") +
-        f"\n\nRecent transcript (oldest first):\n{lines}"
+        f"\n\nTranscript since the CURRENT step started (oldest first; earlier steps' actions are not shown and never count):\n{lines}"
     )
 
 
@@ -102,7 +98,7 @@ def normalize(d):
     if mistake and (mtype not in MISTAKE_TYPES or not wwg):
         mistake = False  # an unexplained "mistake" is not shown to the student
     return {"status": status, "confidence": round(conf, 2),
-            "evidence": re.sub(r"\s+", " ", str(d.get("evidence") or "")).strip()[:200],
+            "evidence": re.sub(r"^\s*(\[\d{1,2}:\d{2}\]\s*)+", "", re.sub(r"\s+", " ", str(d.get("evidence") or ""))).strip()[:200],
             "tip": re.sub(r"\s+", " ", str(d.get("tip") or "")).strip()[:160],
             "mistake": mistake, "mistake_type": mtype if mistake else "",
             "what_went_wrong": wwg if mistake else "", "how_to_fix": fix if mistake else ""}
@@ -164,6 +160,77 @@ def confirm_done(step, transcript_lines):
     return seen, conf
 
 
+SUBSTEP_PROMPT = """You check whether a student has done ONE small sub-step of a lab procedure.
+
+Evidence, in order of importance:
+1. THE IMAGE (latest camera frame). Look at the whole frame. If the sub-step's result is visible right now -
+   e.g. headphones already on the head, the bottle already in a hand, the cup already on the table - it is
+   DONE, even if nothing is moving.
+2. The scribe's recent lines (what the student just did) - supporting context only. "No visible action" means
+   nothing is moving, NOT that the sub-step isn't done.
+
+Be generous: done=true if the image or the lines show the sub-step done or clearly being done. Objects may be
+named differently - the step text gives aliases in parentheses, e.g. "reagent bottle (water bottle)" means a
+water bottle counts; a stuffed toy counts as the "specimen". Ignore exact amounts and durations.
+
+Return ONLY JSON: {"done": true|false, "confidence": 0.0-1.0, "evidence": "<what you see, <= 12 words>"}"""
+
+
+FINISH_PROMPT = """You confirm whether a student has finished one step of a lab procedure. You get the latest camera
+frame and the scribe's lines (what the camera saw the student do in the last seconds).
+
+DONE = the step's MAIN action has been done (or is clearly being done right now) on the step's KEY OBJECT:
+- Use BOTH: the scribe lines are real observations from the last seconds. If they show the main action on the key
+  object (e.g. "Unscrewing cap from a water bottle" for "unscrew the cap") and the image is consistent with it
+  (the key object is visible, nothing contradicts), done=true.
+- Multi-part steps: the main action is what matters. Small follow-ups (set it down, put it aside, close the lid
+  afterwards, step back) do NOT need to be seen.
+- Finished results in the image also count: headphones on the head, cap off the bottle, liquid in the cup.
+
+NOT DONE:
+- The image contradicts the lines: e.g. lines say "putting headphones on" but no headphones are visible.
+- Only hands raised, lifted high or reaching, with no key object involved. Hands in the air are not headphones.
+- The key object is not in the image and the lines don't mention it, or a different action/object is shown.
+
+Objects may have aliases in parentheses (e.g. "reagent bottle (water bottle)"). Ignore exact amounts and durations.
+
+Return ONLY JSON: {"done": true|false, "confidence": 0.0-1.0, "evidence": "<what you see, <= 12 words>"}"""
+
+
+def finished_check(frame, step, transcript_lines):
+    """Strict vision check that the WHOLE step is finished (gate before auto-advancing). Returns (done, conf, evidence)."""
+    return substep_check(frame, {"instruction": step["instruction"], "expected_action": step.get("expected_action")},
+                         step, transcript_lines, prompt=FINISH_PROMPT)
+
+
+def substep_check(frame, substep, parent_step, transcript_lines, prompt=None):
+    """Vision yes/no for one sub-step: latest frame + recent scribe lines + the parent step for aliases.
+    Returns (done, confidence, evidence)."""
+    lines = "\n".join(f"- {l['action']}" for l in transcript_lines[-5:]) or "- (nothing yet)"
+    text = (f"Step {parent_step['number']} (context): {parent_step['instruction']}\n"
+            f"Objects in this step: {', '.join(parent_step.get('visual_cues') or []) or '-'}\n\n"
+            f"SUB-STEP to check: {substep['instruction']}\n"
+            f"Done when the camera sees: {substep.get('expected_action') or substep['instruction']}\n\n"
+            f"Recent scribe lines (supporting context only, oldest first):\n{lines}")
+    if frame:
+        reply, _ = vision.call_model([(frame, "jpeg")], prompt or SUBSTEP_PROMPT, text, max_tokens=120)
+    else:
+        from aws_clients import bedrock
+        resp = bedrock.converse(modelId=config.BEDROCK_MODEL_ID, system=[{"text": prompt or SUBSTEP_PROMPT}],
+                                messages=[{"role": "user", "content": [{"text": text}]}], inferenceConfig={"maxTokens": 120})
+        reply = "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
+    objs = vision.parse_all(reply)
+    if not objs:
+        return False, 0.0, ""
+    o = objs[0]
+    done = o.get("done") is True or str(o.get("done")).lower() == "true"
+    try:
+        conf = max(0.0, min(1.0, float(o.get("confidence", 0))))
+    except (TypeError, ValueError):
+        conf = 0.0
+    return done, conf, re.sub(r"\s+", " ", str(o.get("evidence") or "")).strip()[:120]
+
+
 def check(steps, current_idx, transcript_lines):
     """One matcher call (+ a focused done-check when it says in_progress). Returns (result, model)."""
     from aws_clients import bedrock
@@ -191,8 +258,7 @@ def mock_check(steps, current_idx, tag, line):
     """Deterministic matcher for MOCK_MODE using the scripted line's tag."""
     cur = steps[current_idx]["number"]
     base = {"confidence": 0.9, "evidence": line["action"], "mistake": False, "mistake_type": "",
-            "what_went_wrong": "", "how_to_fix": "",
-            "tip": f"Next up: {steps[current_idx]['instruction'][0].lower()}{steps[current_idx]['instruction'][1:]}"}
+            "what_went_wrong": "", "how_to_fix": ""}
     if not tag:
         return {**base, "status": "not_started", "evidence": ""}
     step, kind = tag.get("step"), tag.get("kind")

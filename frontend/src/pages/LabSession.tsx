@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { api, type FeedbackItem, type Health, type LabSession as Session, type ProcedureSummary } from "../api";
 import { hhmmss, mmss, pad2 } from "../format";
 import type { useLab } from "../lab";
-import { Icon } from "../ui";
+import { Icon, Lightbox, type Slide } from "../ui";
+import { HAND_EDGES, handsState, subscribeHands, type HandsState } from "../hands";
 import { isMuted } from "../voice";
 
 type Lab = ReturnType<typeof useLab>;
@@ -111,16 +112,35 @@ export default function LabSession({ lab, health, openRecord, goProcedures, mute
         {(lab.error || loadErr) && <div className="feed-alert">{lab.error || loadErr}</div>}
         <CameraFeed lab={lab} running={running} mock={mock} elapsed={elapsed} confidence={conf} />
         {stepsOpen && sess && <StepsDrawer sess={sess} onClose={() => setStepsOpen(false)} />}
+        {running && sess!.breakdown && step && sess!.breakdown.step === step.number && (
+          <SubstepsPanel sess={sess!} onManual={lab.substepDone} onExit={lab.exitBreakdown} />
+        )}
+        {running && lab.confusedOffer != null && step && lab.confusedOffer === step.number && !sess!.breakdown && (
+          <div className="confused-pop" role="dialog" aria-label="Feeling confused?">
+            <div className="cp-icon"><Icon name="spark" size={18} /></div>
+            <div className="cp-body">
+              <strong>Feeling confused?</strong>
+              <p>Step {step.number} is taking a little while. Want me to break it into small steps, each checked by the camera?</p>
+              <div className="cp-actions">
+                <button className="cp-yes" onClick={() => lab.answerConfused(true)}>Yes, break it down</button>
+                <button className="cp-no" onClick={() => lab.answerConfused(false)}>No, I've got it</button>
+              </div>
+            </div>
+          </div>
+        )}
         <ScribeOverlay lab={lab} running={running} />
 
         <div className="immersive-controls">
           <button className="control-undo" onClick={lab.undo} disabled={!running || sess!.current === 0} title="Undo previous step" aria-label="Undo previous step">
             <Icon name="undo" size={17} />
           </button>
+          <button className="control-undo" onClick={lab.restartStep} disabled={!running || !!sess?.complete} title="Restart this step" aria-label="Restart this step">
+            <Icon name="restart" size={17} />
+          </button>
           <button className="control-done" onClick={lab.markDone} disabled={!running || !!sess?.complete}>
             <Icon name="check" size={17} /> Mark step done
           </button>
-          <button className={`control-safety ${lab.stream ? "on" : ""}`} onClick={() => (lab.stream ? lab.stopCamera() : lab.startCamera())}
+          <button className={`control-safety ${lab.stream ? "on" : ""}`} onClick={() => (lab.stream ? lab.stopCamera() : void lab.startCamera())}
             title={lab.stream ? "Stop camera" : "Start camera"} aria-label={lab.stream ? "Stop camera" : "Start camera"}>
             <Icon name="camera" size={17} />
           </button>
@@ -159,17 +179,25 @@ function CameraFeed({ lab, running, mock, elapsed, confidence }: { lab: Lab; run
         <>
           <video ref={ref} muted playsInline aria-label="Live bench camera" />
           <div className="camera-vignette" />
+          <HandOverlay videoRef={ref} />
           <div className="camera-label"><i /><span>{running ? "AI WATCHING" : "CAMERA ON"}</span></div>
-          {showCallout && (
-            <div className="detection-lock">
-              <div className="detection-rings"><i /><i /><span><Icon name="spark" size={15} stroke={2.2} /></span></div>
-              <div className="detection-callout">
-                <span>SCRIBE · {mmss(last.elapsed)}</span>
-                <strong>{last.objects[0] ? last.objects[0].charAt(0).toUpperCase() + last.objects[0].slice(1) : "Action"}</strong>
-                <small>{last.action}{confidence != null ? ` · ${confidence}%` : ""}</small>
+          {showCallout && (() => {
+            const f = last.focus;
+            // focus = [x, y, w, h] of the action in the (cover-cropped) frame; center of that box
+            const cx = f ? (f[0] + f[2] / 2) * 100 : 50;
+            const cy = f ? (f[1] + f[3] / 2) * 100 : 50;
+            const flip = cx > 62; // callout on the left when the action is on the right side
+            return (
+              <div className={`detection-lock tracked ${flip ? "flip" : ""}`} style={{ left: `${cx}%`, top: `${cy}%` }}>
+                <div className="detection-rings"><i /><i /><span><Icon name="spark" size={15} stroke={2.2} /></span></div>
+                <div className="detection-callout">
+                  <span>SCRIBE · {mmss(last.elapsed)}</span>
+                  <strong>{last.objects[0] ? last.objects[0].charAt(0).toUpperCase() + last.objects[0].slice(1) : "Action"}</strong>
+                  <small>{last.action}{confidence != null ? ` · ${confidence}%` : ""}</small>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
           <div className="camera-time">CAM 01&nbsp;&nbsp; {running ? hhmmss(elapsed) : "STANDBY"}</div>
         </>
       )}
@@ -177,7 +205,7 @@ function CameraFeed({ lab, running, mock, elapsed, confidence }: { lab: Lab; run
         <div className="camera-skeleton">
           <div className="skeleton-icon"><Icon name="camera" size={28} /></div>
           <span /><span />
-          <p>Connecting to camera…</p>
+          <p>Waiting for camera access… allow the camera to begin</p>
         </div>
       )}
       {(state === "error" || state === "mock") && (
@@ -185,10 +213,98 @@ function CameraFeed({ lab, running, mock, elapsed, confidence }: { lab: Lab; run
           <div><Icon name="camera" size={30} /></div>
           <h3>{state === "mock" ? "Mock mode: scripted demo running" : "Camera is off"}</h3>
           <p>{state === "mock" ? "No camera needed — the scribe plays a recorded run." : "Point it at your bench so LabScribe can see your hands and materials."}</p>
-          <button onClick={lab.startCamera}>Start camera</button>
+          <button onClick={() => lab.startCamera()}>Start camera</button>
         </div>
       )}
     </div>
+  );
+}
+
+const SHOW_HANDS_KEY = "labscribe-show-hands";
+const showHandsPref = () => { try { return localStorage.getItem(SHOW_HANDS_KEY) !== "0"; } catch { return true; } };
+
+/** Draws the 21-point hand skeleton over the (object-fit: cover) video, plus the "Hand tracking" chip. */
+function HandOverlay({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement | null> }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const [show, setShow] = useState(showHandsPref);
+  const [hs, setHs] = useState<HandsState>(handsState());
+  const lastUi = useRef(0);
+  useEffect(() => subscribeHands((st) => {
+    const now = performance.now();
+    if (now - lastUi.current > 250 || st.status !== hs.status) { lastUi.current = now; setHs(st); } // chip at ~4 Hz
+    const c = canvas.current, v = videoRef.current;
+    if (!c || !v) return;
+    const W = c.clientWidth, H = c.clientHeight;
+    if (c.width !== W) c.width = W;
+    if (c.height !== H) c.height = H;
+    const g = c.getContext("2d")!;
+    g.clearRect(0, 0, W, H);
+    if (!showHandsPref() || !v.videoWidth) return;
+    // map 0-1 video coords through object-fit: cover
+    const sc = Math.max(W / v.videoWidth, H / v.videoHeight);
+    const ox = (W - v.videoWidth * sc) / 2, oy = (H - v.videoHeight * sc) / 2;
+    const X = (x: number) => ox + x * v.videoWidth * sc, Y = (y: number) => oy + y * v.videoHeight * sc;
+    // objects: amber boxes with labels (so the whole bench is tracked, not just hands)
+    g.font = "600 11px Inter, system-ui, sans-serif";
+    const anyFocus = st.objects.some((o) => o.focus);
+    for (const o of st.objects) {
+      const x = X(o.box.x), y = Y(o.box.y), w = o.box.w * v.videoWidth * sc, h = o.box.h * v.videoHeight * sc;
+      if (anyFocus && !o.focus) {
+        // not in the instruction: faint outline, no label, so the key objects stand out
+        g.globalAlpha = 0.3;
+        g.strokeStyle = "rgba(255,255,255,0.8)";
+        g.lineWidth = 1;
+        g.setLineDash([2, 5]);
+        g.strokeRect(x, y, w, h);
+        g.setLineDash([]);
+        g.globalAlpha = 1;
+        continue;
+      }
+      g.globalAlpha = o.stale ? 0.45 : o.maybe ? 0.75 : 1;   // fading = kept briefly after the detector lost it
+      g.strokeStyle = o.focus ? "rgba(45, 212, 191, 1)" : o.heldBy ? "rgba(52, 211, 153, 0.95)" : "rgba(251, 191, 36, 0.9)";
+      g.lineWidth = o.focus ? 3 : 2;
+      g.setLineDash(o.focus ? [] : o.maybe ? [2, 4] : [6, 4]);
+      g.strokeRect(x, y, w, h);
+      g.setLineDash([]);
+      const lines = [
+        `${o.focus ? "★ " : ""}${o.label}${o.maybe ? "?" : ""}${o.heldBy ? ` · ${o.heldBy} hand` : ""} · ${o.height}${o.motion ? ` · ${o.motion}` : ""}`,
+        ...(o.relations.length ? [o.relations.join(" · ")] : []),
+      ];
+      const tw = Math.max(...lines.map((s) => g.measureText(s).width)) + 10, lh = 16, top = Math.max(0, y - lh * lines.length - 2);
+      g.fillStyle = o.focus ? "rgba(13, 95, 88, 0.92)" : "rgba(7, 34, 30, 0.85)";
+      g.fillRect(x, top, tw, lh * lines.length + 2);
+      lines.forEach((s, i) => { g.fillStyle = i ? "#fde68a" : "#fff"; g.fillText(s, x + 5, top + 12 + i * lh); });
+      g.globalAlpha = 1;
+    }
+    for (const hand of st.hands) {
+      g.strokeStyle = "rgba(14, 165, 164, 0.95)";
+      g.lineWidth = 2.5;
+      g.beginPath();
+      for (const [a, b] of HAND_EDGES) { g.moveTo(X(hand.points[a].x), Y(hand.points[a].y)); g.lineTo(X(hand.points[b].x), Y(hand.points[b].y)); }
+      g.stroke();
+      g.fillStyle = "#ffffff";
+      for (const pt of hand.points) { g.beginPath(); g.arc(X(pt.x), Y(pt.y), 2.6, 0, Math.PI * 2); g.fill(); }
+    }
+  }), [videoRef]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggle = () => {
+    const v = !show;
+    setShow(v);
+    try { localStorage.setItem(SHOW_HANDS_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+    if (!v) canvas.current?.getContext("2d")?.clearRect(0, 0, canvas.current.width, canvas.current.height);
+  };
+  const text = hs.status === "ready" ? hs.summary || "Looking for hands and objects…" : hs.status === "loading" ? "Loading MediaPipe…"
+    : hs.status === "unavailable" ? "Unavailable — using camera frames only" : "Off";
+  return (
+    <>
+      <canvas ref={canvas} className="hand-canvas" aria-hidden />
+      <div className={`hands-chip ${hs.status}`}>
+        <span className="hc-dot" />
+        <b>Scene tracking</b>
+        {hs.watching && <span className="hc-watch" title="Key words from the current instruction">Watching: {hs.watching}</span>}
+        <span className="hc-text" title={text}>{text}</span>
+        <button onClick={toggle} aria-pressed={show}>{show ? "Hide overlay" : "Show hands & objects"}</button>
+      </div>
+    </>
   );
 }
 
@@ -233,6 +349,31 @@ function StepsDrawer({ sess, onClose }: { sess: Session; onClose: () => void }) 
           );
         })}
       </div>
+    </section>
+  );
+}
+
+function SubstepsPanel({ sess, onManual, onExit }: { sess: Session; onManual: () => void; onExit: () => void }) {
+  const b = sess.breakdown!;
+  return (
+    <section className="substeps-panel" aria-label="Step broken down">
+      <header>
+        <span><Icon name="spark" size={13} /> STEP {b.step} · ONE PIECE AT A TIME</span>
+        <strong>{b.items.filter((x) => x.done).length} of {b.items.length} done</strong>
+        <button className="ss-exit" onClick={onExit} title="Back to the normal step">Exit</button>
+      </header>
+      <ol>
+        {b.items.map((it, i) => (
+          <li key={i} className={it.done ? "done" : i === b.current ? "current" : ""}>
+            <span className="ss-check">{it.done ? <Icon name="check" size={12} stroke={2.6} /> : i + 1}</span>
+            <div>
+              <b>{it.instruction}</b>
+              <small>{it.done ? (it.method === "manual" ? "Marked done" : `Seen: ${it.evidence}`) : `Camera checks: ${it.expected_action}`}</small>
+            </div>
+            {i === b.current && !it.done && <button onClick={onManual} title="Mark this sub-step done" aria-label="Mark this sub-step done"><Icon name="check" size={12} /></button>}
+          </li>
+        ))}
+      </ol>
     </section>
   );
 }
@@ -312,11 +453,12 @@ function CoachChat({ lab, sess, muted, toggleVoice }: { lab: Lab; sess: Session 
         <button onClick={() => setOpen(false)} title="Minimize chat" aria-label="Minimize chat"><span /></button>
       </header>
       <div className="chat-messages" ref={box}>
-        {!lab.chat.length && <div className="ai">Pick a procedure and press Start — I'll guide you step by step and you can ask me anything.</div>}
+        {!lab.chat.length && <div className="ai">Hi! I'm your lab partner. Ask me anything about the procedure — what a step means, what to use, or what to do next.</div>}
         {lab.chat.map((m) => {
           const fb = m.feedbackId ? fbById.get(m.feedbackId) : undefined;
           if (m.kind === "mistake" && fb) return <MistakeBubble key={m.id} f={fb} sid={sess!.session_id} onDismiss={lab.dismiss} />;
-          return <div className={`${m.from} ${m.kind ?? ""}`} key={m.id}>{m.kind === "tip" && <b className="bubble-tag">Tip</b>}{m.text}</div>;
+          if (m.kind === "tip" || m.kind === "step") return null;
+          return <div className={`${m.from} ${m.kind ?? ""}`} key={m.id}>{m.text}</div>;
         })}
         {lab.asking && <div className="ai typing">Thinking…</div>}
       </div>
@@ -334,6 +476,9 @@ function CoachChat({ lab, sess, muted, toggleVoice }: { lab: Lab; sess: Session 
 
 function MistakeBubble({ f, sid, onDismiss }: { f: FeedbackItem; sid: string; onDismiss: (id: string) => void }) {
   const [imgOk, setImgOk] = useState(true);
+  const [view, setView] = useState(false);
+  const src = f.snapshot_id ? `/api/sessions/${sid}/snapshots/${f.snapshot_id}` : "";
+  const slides: Slide[] = src ? [{ src, title: `${MISTAKE_LABEL[f.mistake_type] ?? "Mistake"} · step ${f.step} · ${mmss(f.elapsed)}`, caption: f.what_went_wrong }] : [];
   return (
     <div className={`ai mistake-bubble ${f.dismissed ? "dismissed" : ""}`}>
       <div className="mb-head">
@@ -344,7 +489,12 @@ function MistakeBubble({ f, sid, onDismiss }: { f: FeedbackItem; sid: string; on
       <p><b>What happened</b> {f.what_went_wrong}</p>
       <p className="fix"><b>How to fix</b> {f.how_to_fix}</p>
       <div className="mb-foot">
-        {f.snapshot_id && imgOk && <img src={`/api/sessions/${sid}/snapshots/${f.snapshot_id}`} alt="Snapshot when it happened" onError={() => setImgOk(false)} />}
+        {view && <Lightbox slides={slides} index={0} onClose={() => setView(false)} />}
+        {src && imgOk && (
+          <button className="mb-shot" onClick={() => setView(true)} aria-label="View snapshot">
+            <img src={src} alt="Snapshot when it happened" onError={() => setImgOk(false)} />
+          </button>
+        )}
         {f.corrected && <em className="fixed-tag"><Icon name="check" size={12} /> fixed</em>}
         {!f.dismissed ? <button onClick={() => onDismiss(f.id)}><Icon name="check" size={13} /> Got it</button> : <span className="muted-note">Dismissed</span>}
       </div>

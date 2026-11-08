@@ -71,7 +71,8 @@ def health():
         "region": config.AWS_REGION,
         "model": config.BEDROCK_MODEL_ID,
         "vision_model": vision.active_model(),
-        "advance_mode": "lenient" if config.LENIENT_ADVANCE else "strict",
+        "voice": voice.provider(),
+        "advance_mode": "lenient" if config.LENIENT_ADVANCE else config.ADVANCE_MODE,
         "scribe": {"interval": config.SCRIBE_INTERVAL_SECONDS, "frame_gap": config.SCRIBE_FRAME_GAP_SECONDS,
                    "max_width": config.SCRIBE_FRAME_MAX_WIDTH},
         "missing_settings": missing,
@@ -242,6 +243,7 @@ def session_state(sid: str, since: int = 0):
 
 class Frames(BaseModel):
     frames: list[str] = []  # 1-2 JPEG data URLs, oldest first
+    motion: str = ""        # browser hand-tracking summary (MediaPipe), optional
 
 
 @app.post("/api/sessions/{sid}/scribe")
@@ -262,7 +264,7 @@ def scribe_frames(sid: str, req: Frames):
     if not frames and not config.MOCK_MODE:
         raise HTTPException(422, "no frames")
     try:
-        return sessions.scribe_frames(sid, frames)
+        return sessions.scribe_frames(sid, frames, motion=req.motion[:400])
     except sessions.SessionError as e:
         raise HTTPException(409, str(e))
 
@@ -273,6 +275,16 @@ def mark_step_done(sid: str):
     _session_or_404(sid)
     try:
         return sessions.mark_done(sid)
+    except sessions.SessionError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/sessions/{sid}/steps/restart")
+def restart_step(sid: str):
+    """Start the current step over (earlier camera lines stop counting for it)."""
+    _session_or_404(sid)
+    try:
+        return sessions.restart_step(sid)
     except sessions.SessionError as e:
         raise HTTPException(409, str(e))
 
@@ -320,6 +332,39 @@ def ask_coach(sid: str, req: Question):
     except (ClientError, BotoCoreError) as e:
         raise aws_error(e)
     return {"answer": text, "model": model}
+
+
+class Confused(BaseModel):
+    yes: bool
+
+
+@app.post("/api/sessions/{sid}/confused")
+def confused(sid: str, req: Confused):
+    """'Feeling confused?' answer. yes -> the current step is split into checked sub-steps."""
+    _session_or_404(sid)
+    try:
+        return sessions.answer_confused(sid, req.yes)
+    except sessions.SessionError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except (ClientError, BotoCoreError) as e:
+        raise aws_error(e)
+
+
+@app.post("/api/sessions/{sid}/substeps/exit")
+def substeps_exit(sid: str):
+    _session_or_404(sid)
+    return sessions.exit_breakdown(sid)
+
+
+@app.post("/api/sessions/{sid}/substeps/done")
+def substep_done(sid: str):
+    _session_or_404(sid)
+    try:
+        return sessions.mark_substep_done(sid)
+    except sessions.SessionError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/api/sessions/{sid}/end")

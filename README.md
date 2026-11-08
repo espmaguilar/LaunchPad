@@ -60,7 +60,8 @@ The built UI is committed, so Node is only needed to change it:
 ```bash
 python test_procedures.py   # ingestion: Bedrock retry, normalize, validate, demo manual, store
 python test_scribe.py       # scribe: parsing, per-frame replies, repeats, skip-when-busy, errors
-python test_matcher.py      # step matcher + state machine: advance, mistakes, skips, undo, done-check
+python test_matcher.py      # step matcher + state machine: advance, mistakes, confused/sub-steps, windows
+python test_voice.py        # ElevenLabs voice with Polly fallback (stubbed)
 python test_parser.py       # Rekognition person parsing (background filter)
 ```
 

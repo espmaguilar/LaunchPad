@@ -12,6 +12,7 @@ import procedures
 import sessions
 
 config.MOCK_MODE = True
+config.ADVANCE_MODE = "careful"   # sections 1-14 test the older modes; section 15 tests the default instant mode
 # sections 1-9 test STRICT mode; section 10 tests the default lenient mode
 config.LENIENT_ADVANCE, config.DONE_MIN_CONFIDENCE = False, 0.7
 config.MATCH_MIN_CONFIDENCE, config.DONE_CHECKS, config.MISTAKE_CHECKS, config.SKIP_CHECKS = 0.7, 2, 2, 2
@@ -175,24 +176,55 @@ s = sessions.start(PROC)
 res = run(s, 17)
 kinds = [e["type"] for r in res for e in r["state"]["events"]]
 assert kinds.count("mistake") == 1 and kinds[-1] == "complete" and kinds.count("step_done") == 5, kinds
-# 11. Coach tips: latest tip shown; spoken once the student is stuck for STUCK_SECONDS, not more often
-#     than TIP_REPEAT_SECONDS; reset when the step changes. Check history is kept.
-config.STUCK_SECONDS, config.TIP_REPEAT_SECONDS = 20, 45
+# 11. "Feeling confused?": offered once after CONFUSED_AFTER_SECONDS on a camera step; "no" = never again
+#     for that step; "yes" = sub-steps checked one by one, finishing them unlocks the next step.
+config.CONFUSED_AFTER_SECONDS, config.MOCK_MODE = 25, True
 s = sessions.start(PROC)
-t0 = s["t0"]
-spoken = lambda: [e for e in s["events"] if e["type"] == "tip"]
-sessions.apply_check(s, check("not_started", tip="Pick up the goggles."), t0 + 5)
-assert s["coach_tip"]["text"] == "Pick up the goggles." and not spoken()
-sessions.apply_check(s, check("not_started", tip="Goggles are on the left."), t0 + 21)
-assert [e["voice"] for e in spoken()] == ["Goggles are on the left."]
-sessions.apply_check(s, check("not_started", tip="Try the goggles."), t0 + 40)
-assert len(spoken()) == 1                                         # quiet period
-sessions.apply_check(s, check("not_started", tip="Try the goggles."), t0 + 67)
-assert len(spoken()) == 2
-sessions.apply_check(s, check("done", tip="Great."), t0 + 70)
-assert s["current"] == 1 and s["coach_tip"] is None              # new step: fresh start
-assert len(s["checks"]) == 5 and s["checks"][-1]["status"] == "done"
-assert matcher.normalize({"status": "done", "confidence": 1, "tip": "  Nice   work. "})["tip"] == "Nice work."
+sid = s["session_id"]
+s["step_since"] = s["t0"]
+sessions._maybe_offer_help(s, s["t0"] + 10)
+assert not [e for e in s["events"] if e["type"] == "confused_offer"]
+sessions._maybe_offer_help(s, s["t0"] + 26)
+sessions._maybe_offer_help(s, s["t0"] + 60)
+assert [e["type"] for e in s["events"]].count("confused_offer") == 1     # once per step
+st = sessions.answer_confused(sid, True, now=s["t0"] + 61)
+b = st["breakdown"]
+assert b["step"] == 1 and len(b["items"]) == 3 and b["current"] == 0
+assert any(e["type"] == "breakdown" and "First:" in e["voice"] for e in st["events"])
+for i in range(3):                                                        # mock: one sub-step per tick
+    sessions._check_substep(s, STEPS[0], s["t0"] + 62 + i)
+assert s["current"] == 1 and s["breakdown"] is None                       # unlocked step 2
+assert s["steps_state"][0]["evidence"] == "All sub-steps done"
+# "no" on step 2 -> never asked again for step 2
+s["events"].clear()
+s["step_since"] = s["t0"] + 65
+sessions._maybe_offer_help(s, s["t0"] + 95)
+assert [e["type"] for e in s["events"]].count("confused_offer") == 1
+sessions.answer_confused(sid, False, now=s["t0"] + 96)                   # hands out (clears) pending events
+sessions._maybe_offer_help(s, s["t0"] + 200)
+assert not [e for e in s["events"] if e["type"] == "confused_offer"] and s["confused"][2] == "declined"
+# manual sub-step override
+sessions.answer_confused(sid, True, now=s["t0"] + 201)
+st = sessions.mark_substep_done(sid, now=s["t0"] + 202)
+assert st["breakdown"]["current"] == 1 and st["breakdown"]["items"][0]["method"] == "manual"
+
+# 11b. Strict window: the previous step's line never counts for the new step; snapshot = evidence line's frame
+s = sessions.start(PROC)
+s["transcript"] = [{"elapsed": 16.0, "action": "Placing gray headphones over head.", "repeat": 1, "frame_id": "f1"},
+                   {"elapsed": 19.0, "action": "Setting a stuffed animal on the desk.", "repeat": 1, "frame_id": "f2"}]
+s["frames"] = {"f1": b"headphones", "f2": b"stuffed-animal"}
+s["current"], s["steps_state"][1]["started_elapsed"] = 1, 16.0
+w = sessions._window(s, s["t0"] + 20)
+assert [l["action"] for l in w] == ["Setting a stuffed animal on the desk."], w
+sessions._advance(s, s["t0"] + 20, "Setting a stuffed animal on the desk.", "auto")
+assert s["snapshots"][s["steps_state"][1]["snapshot_id"]] == b"stuffed-animal"
+s2 = sessions.start(PROC)
+s2["transcript"] = [{"elapsed": 16.0, "action": "Placing gray headphones over head.", "repeat": 1}]
+s2["current"], s2["steps_state"][1]["started_elapsed"] = 1, 16.0
+assert sessions._window(s2, s2["t0"] + 17) == []                          # nothing new yet -> nothing to judge
+assert matcher.normalize({"status": "done", "confidence": 1, "evidence": "[00:16] Placing headphones"})["evidence"] == "Placing headphones"
+config.MOCK_MODE = True
+
 # 12. Paper steps (calculate/plot): matcher skipped, coach says "Mark step done"; voice mentions it
 config.LENIENT_ADVANCE, config.DONE_MIN_CONFIDENCE, config.DONE_CHECKS = True, 0.5, 1
 paper_proc = {"procedure_id": "p", "title": "Lab 7", "steps": [
@@ -210,5 +242,93 @@ assert s["current"] == 1                                         # never auto-ad
 st = sessions.mark_done(s["session_id"])
 assert st["current"] == 2 and st["steps_state"][1]["method"] == "manual"
 config.LENIENT_ADVANCE = False
+
+# 13. Restart step: old lines stop counting, confused offer + mistake warnings can come back
+s = sessions.start(PROC)
+sid = s["session_id"]
+s["transcript"] = [{"elapsed": 5.0, "action": "Holding a bottle.", "repeat": 1}]
+s["confused"][1] = "declined"
+s["flagged"].append([1, "mistake:wrong_order"])
+s["done_streak"] = 1
+st = sessions.restart_step(sid, now=s["t0"] + 10)
+assert st["current"] == 0 and st["steps_state"][0]["started_elapsed"] == 10.0
+assert 1 not in s["confused"] and s["flagged"] == [] and s["done_streak"] == 0 and s["breakdown"] is None
+assert sessions._window(s, s["t0"] + 11) == []                    # the old 5 s line no longer counts
+assert any(e["type"] == "restart" and "start step 1 again" in e["voice"] for e in st.get("events", []))
+s["current"] = len(s["steps_state"])
+try:
+    sessions.restart_step(sid); raise AssertionError("restart after the last step should fail")
+except sessions.SessionError:
+    pass
+
+# 14. Careful advance: in_progress never advances; < MIN_STEP_SECONDS doesn't count; every "done" needs the strict
+#     vision finish check (hands lifted high != headphones on); 2 confirmed checks in a row complete the step
+config.LENIENT_ADVANCE, config.DONE_MIN_CONFIDENCE, config.DONE_CHECKS = False, 0.7, 2
+config.MOCK_MODE, config.CONFIRM_WITH_VISION, config.MIN_STEP_SECONDS = False, True, 5
+config.FINISH_MIN_CONFIDENCE, config.IN_PROGRESS_MIN_CONFIDENCE = 0.55, 0.55
+seen = []
+def fake_finish(frame, step, lines):
+    seen.append(frame)
+    return fake_finish.answer
+matcher.finished_check = fake_finish
+s = sessions.start(PROC)
+s["last_frame"] = b"frame"
+fake_finish.answer = (True, 0.9, "headphones on head")
+fake_finish.answer = (False, 0.8, "hands raised, no headphones")
+sessions.apply_check(s, check("in_progress", 0.5), s["t0"] + 6)
+assert seen == []                                               # weak in_progress (< 55%): not even checked
+sessions.apply_check(s, check("in_progress", 0.95), s["t0"] + 6)
+sessions.apply_check(s, check("in_progress", 0.95), s["t0"] + 9)
+assert s["current"] == 0 and len(seen) == 2                     # confident in_progress -> vision decides (here: no)
+seen.clear()
+fake_finish.answer = (True, 0.9, "headphones on head")
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 3)
+assert s["current"] == 0 and seen == [] and s["done_streak"] == 0   # too early: not even checked
+fake_finish.answer = (False, 0.8, "hands raised, no headphones")
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 6)
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 9)
+assert s["current"] == 0 and s["done_streak"] == 0 and "no 0.80" in s["checks"][-1]["confirm"]
+fake_finish.answer = (True, 0.5, "maybe headphones")             # below 55% -> no
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 12)
+assert s["current"] == 0
+fake_finish.answer = (True, 0.9, "headphones on head")
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 15)
+assert s["current"] == 0 and s["done_streak"] == 1                # once is not enough
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 18)
+assert s["current"] == 1                                         # held for 2 checks -> complete
+# compound step: matcher keeps saying in_progress ("unscrewing cap", cap not yet set down) -> vision yes twice -> next
+fake_finish.answer = (True, 0.85, "cap being unscrewed from water bottle")
+sessions.apply_check(s, check("in_progress", 0.6), s["t0"] + 30)
+sessions.apply_check(s, check("in_progress", 0.7), s["t0"] + 33)
+assert s["current"] == 2
+config.MOCK_MODE = True
+
+# 15. Instant mode (default): one resembling check + a line naming the key object -> next step right away
+config.ADVANCE_MODE, config.LENIENT_ADVANCE, config.DONE_MIN_CONFIDENCE = "instant", False, 0.55
+specimen = {"procedure_id": "s", "title": "Specimen", "steps": [
+    {"number": 1, "instruction": "Put on the headphones.", "visual_cues": ["headphones"], "expected_action": "headphones on head"},
+    {"number": 2, "instruction": "Place the specimen (stuffed animal) in the center of the workspace, facing the camera.",
+     "visual_cues": ["stuffed animal", "workspace"], "expected_action": "stuffed animal centered"},
+    {"number": 3, "instruction": "Pick up the reagent bottle (water bottle) and unscrew the cap.", "visual_cues": ["water bottle", "cap"]}]}
+assert sessions._key_words(specimen["steps"][1]) == {"stuffed", "animal"}
+assert "head" not in sessions._key_words({"instruction": "Put on hearing protection: place the headphones over both ears.", "visual_cues": ["headphones", "head"]})
+assert "phone" in sessions._key_words({"instruction": "Pick up the data recorder (iPhone) and take a photo.", "visual_cues": ["iPhone"]})
+s = sessions.start(specimen)
+s["transcript"] = [{"elapsed": 2.0, "action": "Lifting both hands up high.", "objects": [], "repeat": 1}]
+sessions.apply_check(s, check("in_progress", 0.8), s["t0"] + 3)
+assert s["current"] == 0 and "no line names" in s["checks"][-1]["confirm"]        # hands up != headphones
+s["transcript"].append({"elapsed": 4.0, "action": "Adjusting headphones on head.", "objects": ["headphones"], "repeat": 1})
+sessions.apply_check(s, check("in_progress", 0.6), s["t0"] + 4.5)
+assert s["current"] == 1                                                          # one check, instantly
+s["transcript"].append({"elapsed": 6.0, "action": "Holding a stuffed animal with both hands.", "objects": [], "repeat": 1})
+sessions.apply_check(s, check("in_progress", 0.5), s["t0"] + 6.5)
+assert s["current"] == 1                                                          # below 55%: not yet
+sessions.apply_check(s, check("in_progress", 0.6), s["t0"] + 9)
+assert s["current"] == 2
+s["transcript"].append({"elapsed": 10.0, "action": "Unscrewing cap from a clear water bottle.", "objects": [], "repeat": 1})
+sessions.apply_check(s, check("done", 0.9, mistake=True, mistake_type="wrong_order"), s["t0"] + 10.5)
+assert s["current"] == 2                                                          # never while a mistake is reported
+sessions.apply_check(s, check("done", 0.9), s["t0"] + 11)
+assert s["complete"] if "complete" in s else s["current"] == 3
 
 print("all matcher checks passed")

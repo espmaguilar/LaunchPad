@@ -5,6 +5,7 @@
 // MOCK_MODE works without a camera (the server scripts the transcript).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, post, type Health, type LabSession, type ScribeLine, type ScribeResult, type SessionEvent } from "./api";
+import { motionSummary, setFocusTerms, startHands, stopHands } from "./hands";
 import { speak, unlockAudio } from "./voice";
 
 export interface LabState {
@@ -20,6 +21,7 @@ export interface LabState {
   coach: { text: string; type: SessionEvent["type"]; at: number } | null; // latest spoken line
   chat: ChatMessage[];
   asking: boolean;
+  confusedOffer: number | null; // step number the "Feeling confused?" pop-up is asking about
 }
 
 export interface ChatMessage {
@@ -42,11 +44,11 @@ export function useLab(health: Health | null) {
   const ring = useRef<string[]>([]);
   const inFlight = useRef(false);
   const sessionRef = useRef<LabSession | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const [s, setS] = useState<LabState>({
     stream: null, session: null, lines: [], lastMs: null, model: null, skipped: 0, scribeError: null, error: null, starting: false,
-    coach: null, chat: [], asking: false,
+    coach: null, chat: [], asking: false, confusedOffer: null,
   });
-  const lastTip = useRef<string | null>(null);
   const pushChat = useCallback((msgs: Omit<ChatMessage, "id">[]) => {
     if (!msgs.length) return;
     setS((x) => ({ ...x, chat: [...x.chat, ...msgs.map((m) => ({ ...m, id: ++chatId }))].slice(-60) }));
@@ -58,19 +60,16 @@ export function useLab(health: Health | null) {
     const { transcript: _t, events, ...rest } = st;
     void _t;
     sessionRef.current = { ...(sessionRef.current as LabSession), ...rest, transcript: [] };
+    if (st.focus_terms) setFocusTerms(st.focus_terms.action, st.focus_terms.objects);
     const evs = events ?? [];
     if (evs.length) speak(evs.map((e) => e.voice).join(" "));
-    // chat log: new coach tips, step completions, corrections
+    // chat log (chatbot only): corrections are shown as cards; no tips, no step chatter
     const msgs: Omit<ChatMessage, "id">[] = [];
     for (const e of evs) {
       if (e.type === "mistake" || e.type === "possible_skip") msgs.push({ from: "ai", text: e.voice, kind: "mistake", feedbackId: e.feedback_id });
-      else if (e.type === "step_done" || e.type === "complete" || e.type === "undo") msgs.push({ from: "ai", text: e.voice, kind: "step" });
     }
-    const tip = rest.coach_tip?.text;
-    if (tip && tip !== lastTip.current) {
-      lastTip.current = tip;
-      msgs.push({ from: "ai", text: tip, kind: "tip" });
-    }
+    const offer = evs.find((e) => e.type === "confused_offer");
+    if (offer) setTimeout(() => setS((x) => ({ ...x, confusedOffer: offer.step ?? null })), 0);
     if (msgs.length) setTimeout(() => pushChat(msgs), 0);
     setS((x) => ({
       ...x,
@@ -108,7 +107,7 @@ export function useLab(health: Health | null) {
     if (!frames.length && !mock) return; // camera not ready yet
     inFlight.current = true;
     try {
-      const r = await post<ScribeResult>(`/api/sessions/${sess.session_id}/scribe`, { frames });
+      const r = await post<ScribeResult>(`/api/sessions/${sess.session_id}/scribe`, { frames, motion: motionSummary() });
       if (sessionRef.current?.session_id !== sess.session_id) return;
       applyState(r.state);
       if (r.line) {
@@ -136,8 +135,10 @@ export function useLab(health: Health | null) {
     return () => window.clearInterval(t);
   }, [s.session, interval, tick]);
 
-  const startCamera = useCallback(async () => {
+  /** Ask for camera permission and start the feed. Resolves true when the camera is live. */
+  const startCamera = useCallback(async (): Promise<boolean> => {
     unlockAudio();
+    if (streamRef.current) return true;
     setS((x) => ({ ...x, starting: true, error: null }));
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
@@ -147,10 +148,14 @@ export function useLab(health: Health | null) {
       v.srcObject = stream;
       await v.play();
       ring.current = [];
+      startHands(v); // MediaPipe hand tracking (optional: no-op if it can't load)
+      streamRef.current = stream;
       setS((x) => ({ ...x, stream, starting: false }));
+      return true;
     } catch (e) {
       setS((x) => ({ ...x, starting: false,
         error: `Camera unavailable: ${(e as Error).message}. Allow camera access and use http://localhost.` }));
+      return false;
     }
   }, []);
 
@@ -159,6 +164,8 @@ export function useLab(health: Health | null) {
       x.stream?.getTracks().forEach((t) => t.stop());
       if (video.current) video.current.srcObject = null;
       ring.current = [];
+      stopHands();
+      streamRef.current = null;
       return { ...x, stream: null };
     });
   }, []);
@@ -166,19 +173,22 @@ export function useLab(health: Health | null) {
   const startSession = useCallback(async (procedureId: string) => {
     unlockAudio();
     setS((x) => ({ ...x, error: null }));
+    // camera permission FIRST: the session clock and the spoken intro only start once the camera prompt is answered
+    // (if it's denied the session still starts - mock mode and Mark done work without a camera)
+    if (!streamRef.current) await startCamera();
     try {
       const sess = await post<LabSession>("/api/sessions", { procedure_id: procedureId });
       sessionRef.current = sess;
+      if (sess.focus_terms) setFocusTerms(sess.focus_terms.action, sess.focus_terms.objects);
       const first = sess.procedure.steps[0];
       const hello = first ? `Let's start ${sess.procedure.title}. Step 1: ${first.instruction}` : "Let's start.";
-      lastTip.current = sess.coach_tip?.text ?? null;
       setS((x) => ({ ...x, session: sess, lines: [], skipped: 0, scribeError: null, lastMs: null, coach: null,
         chat: [{ id: ++chatId, from: "ai", text: hello, kind: "info" }] }));
       speak(hello);
     } catch (e) {
       setS((x) => ({ ...x, error: `Could not start the session: ${(e as Error).message}` }));
     }
-  }, []);
+  }, [startCamera]);
 
   const endSession = useCallback(async () => {
     const sess = sessionRef.current;
@@ -217,8 +227,21 @@ export function useLab(health: Health | null) {
       setS((x) => ({ ...x, asking: false }));
     }
   }, [pushChat]);
+  const answerConfused = useCallback(async (yes: boolean) => {
+    setS((x) => ({ ...x, confusedOffer: null }));
+    const sess = sessionRef.current;
+    if (!sess) return;
+    try {
+      applyState(await post<LabSession>(`/api/sessions/${sess.session_id}/confused`, { yes }));
+    } catch (e) {
+      setS((x) => ({ ...x, error: `Couldn't break the step down: ${(e as Error).message}` }));
+    }
+  }, [applyState]);
+  const substepDone = useCallback(() => act("substeps/done"), [act]);
+  const exitBreakdown = useCallback(() => act("substeps/exit"), [act]);
   const markDone = useCallback(() => act("steps/done"), [act]);
   const undo = useCallback(() => act("steps/undo"), [act]);
+  const restartStep = useCallback(() => act("steps/restart"), [act]);
   const dismiss = useCallback((id: string) => act(`feedback/${id}/dismiss`), [act]);
 
   const closeSession = useCallback(() => {
@@ -238,5 +261,5 @@ export function useLab(health: Health | null) {
 
   useEffect(() => () => s.stream?.getTracks().forEach((t) => t.stop()), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { ...s, startCamera, stopCamera, startSession, endSession, closeSession, resync, markDone, undo, dismiss, ask };
+  return { ...s, startCamera, stopCamera, startSession, endSession, closeSession, resync, markDone, undo, restartStep, dismiss, ask, answerConfused, substepDone, exitBreakdown };
 }

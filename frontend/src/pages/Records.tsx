@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type LabSession } from "../api";
 import { fmtWhen, mmss } from "../format";
-import { Icon, Notice, PageHeading } from "../ui";
+import { Icon, Lightbox, Notice, PageHeading, type Slide } from "../ui";
 
 const MISTAKE_LABEL: Record<string, string> = {
   wrong_order: "Out-of-order action", wrong_material: "Wrong material", wrong_technique: "Technique",
@@ -14,6 +14,7 @@ export const durationOf = (s: LabSession) =>
 export default function Records({ selected, setSelected }: { selected: string | null; setSelected: (id: string | null) => void }) {
   const [list, setList] = useState<LabSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<number | null>(null);
   useEffect(() => {
     api<LabSession[]>("/api/sessions").then(setList).catch((e) => setError(e.message));
   }, []);
@@ -37,8 +38,25 @@ export default function Records({ selected, setSelected }: { selected: string | 
   const result = rec.complete ? `Completed · ${mistakes.length ? `${corrected} of ${mistakes.length} mistake${mistakes.length === 1 ? "" : "s"} corrected` : "no mistakes"}`
     : `${doneCount} of ${steps.length} steps${rec.ended_at ? "" : " · in progress"}`;
 
+  // every snapshot in this record, in timeline order (steps, then feedback)
+  const snap = (id: string) => `/api/sessions/${rec.session_id}/snapshots/${id}`;
+  const slides: (Slide & { key: string })[] = [
+    ...steps.flatMap((step, i) => {
+      const st = rec.steps_state[i];
+      return st?.status === "done" && st.snapshot_id
+        ? [{ key: `s${step.number}`, src: snap(st.snapshot_id), title: `Step ${step.number} · ${mmss(st.done_elapsed ?? 0)}`,
+             caption: `${step.instruction} — ${st.method === "manual" ? "marked done by the student" : `seen: ${st.evidence}`}` }]
+        : [];
+    }),
+    ...rec.feedback.filter((f) => f.snapshot_id).map((f) => ({ key: `f${f.id}`, src: snap(f.snapshot_id!),
+      title: `${f.kind === "possible_skip" ? "Possible skipped step" : MISTAKE_LABEL[f.mistake_type] || "Mistake"} · step ${f.step} · ${mmss(f.elapsed)}`,
+      caption: f.what_went_wrong })),
+  ];
+  const openSlide = (key: string) => setViewer(Math.max(0, slides.findIndex((x) => x.key === key)));
+
   return (
     <div className="page-container record-page">
+      {viewer != null && <Lightbox slides={slides} index={viewer} onClose={() => setViewer(null)} />}
       {list.length > 1 && (
         <div className="record-picker">
           <span>Session</span>
@@ -85,10 +103,10 @@ export default function Records({ selected, setSelected }: { selected: string | 
                   </div>
                   <div className="evidence-shot">
                     {done && st.snapshot_id ? (
-                      <a href={`/api/sessions/${rec.session_id}/snapshots/${st.snapshot_id}`} target="_blank" rel="noreferrer">
-                        <img src={`/api/sessions/${rec.session_id}/snapshots/${st.snapshot_id}`} alt={`Step ${step.number} evidence`} />
+                      <button className="shot-btn" onClick={() => openSlide(`s${step.number}`)} aria-label={`View step ${step.number} snapshot`}>
+                        <img src={snap(st.snapshot_id)} alt={`Step ${step.number} evidence`} />
                         <span>View</span>
-                      </a>
+                      </button>
                     ) : <div className="shot-empty"><Icon name="camera" size={14} /></div>}
                   </div>
                 </div>
@@ -104,7 +122,9 @@ export default function Records({ selected, setSelected }: { selected: string | 
             </div>
             {rec.feedback.map((f) => (
               <div className="deviation-row" key={f.id}>
-                <span><Icon name="alert" size={16} /></span>
+                {f.snapshot_id ? (
+                  <button className="dev-shot" onClick={() => openSlide(`f${f.id}`)} aria-label="View snapshot"><img src={snap(f.snapshot_id)} alt="" /></button>
+                ) : <span><Icon name="alert" size={16} /></span>}
                 <div>
                   <strong>{f.kind === "possible_skip" ? "Possible skipped step" : MISTAKE_LABEL[f.mistake_type] || "Mistake"}</strong>
                   <p>{f.what_went_wrong}</p>

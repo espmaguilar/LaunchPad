@@ -1,5 +1,5 @@
 // Icons + logo from the LabScribe design (Figma Make export), plus small shared components.
-import type { ReactNode } from "react";
+import { useEffect as useEffectLB, useState as useStateLB, type ReactNode } from "react";
 
 export type IconName =
   | "live"
@@ -14,6 +14,7 @@ export type IconName =
   | "clock"
   | "spark"
   | "undo"
+  | "restart"
   | "grip"
   | "edit"
   | "trash"
@@ -97,6 +98,12 @@ export function Icon({
       <>
         <path d="m10 2 1.2 4.2L15 8l-3.8 1.8L10 14l-1.2-4.2L5 8l3.8-1.8Z" />
         <path d="m16 13 .6 2.2L19 16l-2.4.8L16 19l-.6-2.2L13 16l2.4-.8Z" />
+      </>
+    ),
+    restart: (
+      <>
+        <path d="M3 10a7 7 0 1 0 2.1-5" />
+        <path d="M3 3v4h4" />
       </>
     ),
     undo: (
@@ -244,6 +251,55 @@ export function Notice({ tone, children, onClose }: { tone: "error" | "ok" | "in
     <div className={`notice ${tone}`} role={tone === "error" ? "alert" : "status"}>
       <div>{children}</div>
       {onClose && <button onClick={onClose} aria-label="Dismiss"><Icon name="close" size={12} /></button>}
+    </div>
+  );
+}
+
+// ---------- image carousel (lightbox) ----------
+
+export interface Slide {
+  src: string;
+  title: string;
+  caption?: string;
+}
+
+/** Full-screen image carousel: arrows / keyboard ← → to browse, Esc or backdrop to close. */
+export function Lightbox({ slides, index, onClose }: { slides: Slide[]; index: number; onClose: () => void }) {
+  const [i, setI] = useStateLB(index);
+  const n = slides.length;
+  useEffectLB(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight") setI((x) => (x + 1) % n);
+      if (e.key === "ArrowLeft") setI((x) => (x - 1 + n) % n);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [n, onClose]);
+  if (!n) return null;
+  const s = slides[i];
+  return (
+    <div className="lightbox" role="dialog" aria-modal="true" aria-label="Snapshot viewer" onClick={onClose}>
+      <div className="lightbox-inner" onClick={(e) => e.stopPropagation()}>
+        <button className="lb-close" onClick={onClose} aria-label="Close"><Icon name="close" size={16} /></button>
+        {n > 1 && <button className="lb-nav prev" onClick={() => setI((i - 1 + n) % n)} aria-label="Previous"><Icon name="chevron" size={22} /></button>}
+        <img src={s.src} alt={s.title} />
+        {n > 1 && <button className="lb-nav next" onClick={() => setI((i + 1) % n)} aria-label="Next"><Icon name="chevron" size={22} /></button>}
+        <div className="lb-caption">
+          <strong>{s.title}</strong>
+          {s.caption && <span>{s.caption}</span>}
+          {n > 1 && <em>{i + 1} / {n}</em>}
+        </div>
+        {n > 1 && (
+          <div className="lb-thumbs">
+            {slides.map((t, k) => (
+              <button key={t.src + k} className={k === i ? "on" : ""} onClick={() => setI(k)} aria-label={t.title}>
+                <img src={t.src} alt="" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

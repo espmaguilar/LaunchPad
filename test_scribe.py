@@ -11,7 +11,10 @@ import vision
 
 # 1. normalize: trims, capitalizes, ends with a period, dedupes objects, caps length
 n = scribe.normalize({"action": '  pouring water into a clear cup ', "objects": ["Clear Cup", "clear cup", "water", ""]})
-assert n == {"action": "Pouring water into a clear cup.", "objects": ["clear cup", "water"]}, n
+assert n == {"action": "Pouring water into a clear cup.", "objects": ["clear cup", "water"], "focus": None}, n
+assert scribe.normalize({"action": "x", "focus": [0.9, 0.1, 0.5, 0.2]})["focus"] == [0.9, 0.1, 0.1, 0.2]   # clamped
+assert scribe.normalize({"action": "x", "focus": [62, 40, 25, 30]})["focus"] == [0.62, 0.4, 0.25, 0.3]     # percentages
+assert scribe.normalize({"action": "x", "focus": "center"})["focus"] is None
 assert scribe.normalize({"action": " ".join(["word"] * 40)})["action"].endswith("…")
 for bad in [{}, {"action": "  "}, "text"]:
     try:
@@ -45,6 +48,19 @@ blocks = calls[0]["messages"][0]["content"]
 assert [b["image"]["source"]["bytes"] for b in blocks if "image" in b] == [b"f2", b"f3"]
 assert "temperature" not in calls[0]["inferenceConfig"]
 assert out["action"] == "Stirring blue water with a spoon." and out["model"] == "test-model"
+
+# 3b. hand-tracking summary is added to the request text when present
+calls.clear()
+scribe.describe([b"f1", b"f2"], "right hand: pouring 2.1s, tilt 68°")
+txt = [b["text"] for b in calls[0]["messages"][0]["content"] if "text" in b][0]
+assert "Scene tracking (last 3 s): right hand: pouring 2.1s" in txt
+calls.clear()
+scribe.describe([b"f1", b"f2"], "", {"action": "twist, open", "objects": ["bottle cap"]})
+txt = [b["text"] for b in calls[0]["messages"][0]["content"] if "text" in b][0]
+assert "Watch for: action 'twist, open' with bottle cap." in txt
+calls.clear()
+scribe.describe([b"f1"])
+assert "Scene tracking" not in [b["text"] for b in calls[0]["messages"][0]["content"] if "text" in b][0]
 
 # 4. sessions: transcript lines, repeats merged, timestamps relative to start
 proc = {"procedure_id": "p1", "title": "Color-Change Reaction", "steps": [{"number": 1, "instruction": "Goggles"}]}
@@ -106,5 +122,19 @@ gate.set()
 [t.join() for t in ths]
 scribe.mock_line = orig
 assert sum(1 for r in results if r.get("skipped")) == 4 and sum(1 for r in results if "line" in r) == 1, results
+
+# key words of the instruction -> what the camera watches
+kt = scribe.key_terms
+assert kt({"instruction": "Twist the bottle cap open."}) == {"action": "twist, open", "objects": ["bottle cap"]}
+assert kt({"instruction": "Add 5 drops of blue food coloring to the cup and stir."}) == {"action": "add, stir", "objects": ["blue food coloring", "cup"]}
+assert kt({"instruction": "Put on safety goggles.", "visual_cues": ["safety goggles", "blue"]}) == {"action": "put on", "objects": ["safety goggles"]}
+assert kt({"instruction": "Measure the length of the string with a meter stick."})["objects"] == ["string", "meter stick"]
+assert kt(None) == {"action": "", "objects": []}
+import sessions
+proc = {"procedure_id": "p", "title": "T", "steps": [{"number": 1, "instruction": "Twist the bottle cap open.", "visual_cues": []}]}
+ss_raw = sessions.start(proc)
+assert sessions.public(ss_raw)["focus_terms"]["objects"] == ["bottle cap"]
+ss_raw["breakdown"] = {"step": 1, "current": 0, "since": 0, "items": [{"instruction": "Pick up the water bottle", "expected_action": "x", "done": False}]}
+assert sessions._focus_terms(ss_raw) == {"action": "pick up", "objects": ["water bottle", "bottle cap"]}
 
 print("all scribe checks passed")

@@ -45,13 +45,26 @@ MATCH_MIN_CONFIDENCE = 0.7      # below this a mistake / skip check doesn't coun
 # LENIENT_ADVANCE: move on as soon as the student does anything resembling the current step
 # ("in_progress", "done", or already doing the next step) on ONE check at DONE_MIN_CONFIDENCE.
 # False = strict: only "done" >= MATCH_MIN_CONFIDENCE on DONE_CHECKS consecutive checks.
-LENIENT_ADVANCE = True
-DONE_MIN_CONFIDENCE = 0.5 if LENIENT_ADVANCE else MATCH_MIN_CONFIDENCE
+# ADVANCE_MODE (default "instant", user: "when a human does something it's instant"): ONE matcher check that
+# resembles the step (done / in_progress / next_step_detected >= DONE_MIN_CONFIDENCE) advances immediately, as long
+# as a transcript line since the step started names one of the step's KEY OBJECTS (so "lifting hands" can never tick
+# "put on headphones"). "careful" = 2 checks + vision finish check + MIN_STEP_SECONDS; "lenient"/"strict" = older modes.
+ADVANCE_MODE = _env("ADVANCE_MODE", "instant").lower()
+# careful mode (was the default) (user: "things are being done in haste" - hands lifted high ticked "put on headphones").
+LENIENT_ADVANCE = _env("LENIENT_ADVANCE", "false").lower() == "true"
+DONE_MIN_CONFIDENCE = 0.5 if LENIENT_ADVANCE else 0.55   # matcher "done" this sure counts toward passing
 DONE_CHECKS = 1 if LENIENT_ADVANCE else 2  # consecutive qualifying checks before advancing
+# careful mode: a step can't complete sooner than this after it started, and each "done" must be confirmed by a
+# strict vision check of the latest frame (matcher.finished_check: key object visibly in its finished state)
+MIN_STEP_SECONDS = float(_env("MIN_STEP_SECONDS", "5"))
+CONFIRM_WITH_VISION = _env("CONFIRM_WITH_VISION", "true").lower() == "true"
+FINISH_MIN_CONFIDENCE = 0.55       # vision finish check must say done at least this sure
+IN_PROGRESS_MIN_CONFIDENCE = 0.55  # matcher "in_progress" this sure is also sent to the vision finish check
 MISTAKE_CHECKS = 2              # consecutive confident detections of the same mistake before flagging
 SKIP_CHECKS = 2                 # consecutive "next_step_detected" before "Possible skipped step"
-STUCK_SECONDS = 20              # on the same step this long -> the coach speaks its latest tip
-TIP_REPEAT_SECONDS = 45         # ...and at most this often after that
+CONFUSED_AFTER_SECONDS = int(_env("CONFUSED_AFTER_SECONDS", "25"))  # on a camera step this long -> "Feeling confused?"
+MAX_SUBSTEPS = 5                # a confused step is split into 2..MAX_SUBSTEPS sub-steps
+SUBSTEP_MIN_CONFIDENCE = 0.5    # focused check confidence needed to tick a sub-step
 CHECK_HISTORY = 40              # matcher results kept per session (debugging + lab record)
 
 # --- Vision model (scribe + PPE checks) ---
@@ -72,7 +85,12 @@ BODY_PART_MIN_CONFIDENCE = 60
 BODY_PART_TO_GEAR = {"FACE": "FACE_COVER", "HEAD": "HEAD_COVER", "LEFT_HAND": "HAND_COVER", "RIGHT_HAND": "HAND_COVER"}
 GEAR_LABELS = {"FACE_COVER": "face cover", "HAND_COVER": "gloves", "HEAD_COVER": "head protection"}
 
-# --- Voice (Amazon Polly) ---
+# --- Voice ---
+# ElevenLabs is used when ELEVENLABS_API_KEY is set (voice ELEVENLABS_VOICE_ID); otherwise - or if an
+# ElevenLabs call fails - Amazon Polly. The key lives in .env only, never in code or git.
+ELEVENLABS_API_KEY = _env("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = _env("ELEVENLABS_VOICE_ID", "dmWfLQZJq7wNPv9WmtiM")
+ELEVENLABS_MODEL_ID = _env("ELEVENLABS_MODEL_ID", "eleven_turbo_v2_5")   # low latency, good for live coaching
 POLLY_VOICE_ID = "Joanna"
 POLLY_ENGINE = "neural"
 MAX_VOICE_CHARS = 400
